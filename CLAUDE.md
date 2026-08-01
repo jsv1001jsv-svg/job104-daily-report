@@ -61,7 +61,7 @@
 | 本機開發 | **Docker Compose**（api / scheduler / firestore 三服務） | 見第 11 節 |
 | 排程 | **Modal** `modal.Cron`，時區 Asia/Taipei | 每天 09:00；本機由 APScheduler 模擬 |
 | Webhook | **Modal Web Endpoint**（FastAPI） | 接 LINE follow / message 事件，登記使用者與條件 |
-| 抓取 | **HTTP 請求（httpx）為主**，Playwright 備援 | 104 有 JSON API |
+| 抓取 | **Playwright 為主**（httpx 已證實不可行） | 104 全站有 Cloudflare 防護，見第 5 節 |
 | 資料庫 | **Firebase（Firestore）** | 使用者表 + 各使用者已看過職缺 ID |
 | 摘要 | **OpenRouter**（省錢模型，型號待定） | 濃縮職缺描述 |
 | 推送 | **LINE Messaging API** push message | LINE Notify 已停用（見註記） |
@@ -72,7 +72,14 @@
 
 - ⚠️ **LINE Notify 已於 2025/3/31 停用**，改用 **Messaging API + 官方帳號**。
 - **免費額度成本**：LINE 官方帳號免費方案每月推播則數有限（約 200~500 則/月，依方案）。1 使用者 × 1 則/天 × 30 天 ≈ 30 則/人月 → 免費方案約可服務個位數~十幾位使用者，之後需升級方案或分流。
-- **104 抓取**：以 JSON API 為主，帶合理 `User-Agent` 與 `Referer`；低頻（一天一次）、當好公民。
+- **104 抓取**：JSON API 已驗證可用（endpoint / 參數 / 欄位見 `src/scraper/client.py`），
+  但 🔴 **`www.104.com.tw` 全站受 Cloudflare bot 防護**——2026-08-01 實測，純 httpx
+  帶再完整的 header 也是 403「Just a moment...」，有瀏覽器 `cf_clearance` cookie 才會通。
+  因此抓取必須經瀏覽器 session（Playwright），代價是 image +1GB、每次多花 10~30 秒。
+  例外：`static.104.com.tw` 的分類表（Area / JobCat）**不受**限制，可直接抓。
+- **104 官方無公開職缺 API**：`developers.104.com.tw` 只提供 B2B（履歷傳輸、職缺刊登），
+  需企業客戶身分，且沒有任何一支能讓第三方讀取公開職缺。爬蟲無法用官方管道取代。
+- 低頻（一天一次）、有筆數上限、帶可辨識 UA，當好公民。
 - **一個官方帳號只能設一個 Webhook URL**：多使用者共用同一個 Webhook 端點處理所有事件。
 - **金鑰不寫進程式碼**：全部放 **Modal Secrets**。
 
@@ -115,11 +122,18 @@ users/{userId}
 
 ## 9. 待確認 / 待決定
 
-1. **104 API 實際格式**（🔴 最高優先，卡住 scraper / summarizer / pipeline 的測試）：
-   endpoint、參數名、回應欄位路徑目前皆為推測，須開 DevTools Network 實測後修正。
-2. **地區對應表代碼值**：`src/scraper/area_map.py` 的 area code 尚未驗證，
-   須逐一勾選 104 各縣市、比對網址 `area=` 參數。查找**邏輯**已完成並有測試。
-3. **OpenRouter 省錢模型**：實作前挑一個當下便宜且中文摘要品質可接受的型號。
+1. ~~**104 API 實際格式**~~ ✅ 2026-08-01 完成驗證，已寫入 `src/scraper/client.py`。
+2. ~~**地區對應表代碼值**~~ ✅ 2026-08-01 對 104 官方 `Area.json` 驗證，原本 20 筆錯 16 筆。
+3. **Cloudflare 繞過方式**（🔴 現在的最高優先，卡住 scraper 上線）：
+   已知純 httpx 不可行。三個選項待評估：
+   Playwright 攔截頁面自己發的 XHR（推薦）／ Playwright 解 DOM ／
+   從瀏覽器取 `cf_clearance` cookie 餵給 httpx（會過期，維護成本高）。
+4. **keyword vs jobcat 搜尋**：`jobcat`（如後端工程師 = 2007001016）比關鍵字精準，
+   關鍵字會誤中標題含該字串的無關職缺。代價是使用者的自然語言輸入要多一層對應到職務代碼。
+   `search_jobs()` 兩種都支援，預設用 keyword，尚未決定正式採用哪個。
+5. **台灣就業通 API 是否納入為補充來源**：勞動部開放資料，免費免申請、實測可用，
+   但職缺池與 104 差異大（政府就業服務站為主），且資料集標示更新頻率「每 1 年」待查證。
+6. **OpenRouter 省錢模型**：實作前挑一個當下便宜且中文摘要品質可接受的型號。
    目前預設 `google/gemini-2.0-flash-001`。
 4. **使用者設定條件的 UX**：目前用「傳訊息給官方帳號（例：台北 後端工程師）」，
    之後可加指令（如「/set」「/stop」）。
@@ -197,7 +211,29 @@ docker compose exec api pytest
 
 > 精簡條目。詳細除錯過程見 `docs/devlog/YYYY-MM-DD.md`。
 
-### 2026-08-01 — 專案骨架與 Docker 開發環境
+### 2026-08-01（下午）— 104 API 驗證完成
+
+**完成**
+- 新增 `scripts/probe_104_api.py`：探測工具，打真實 endpoint 並印出原始回應
+- 搜尋與詳情兩支 API 全部驗證，`client.py` 依真實欄位重寫
+- `area_map.py` 20 筆地區代碼改用 104 官方 `Area.json` 的值
+- 測試 31 → 79 通過，覆蓋率 44% → 54%
+
+**推翻的假設**
+| 原本以為 | 實際 |
+| :--- | :--- |
+| httpx 帶 UA/Referer 就能抓 | ❌ Cloudflare 擋，403「Just a moment...」 |
+| 回應是 `data.list` | `data` 直接就是陣列 |
+| 詳情是 `/job/ajax/content/{id}` | 是 `/api/jobs/{slug}`（舊教學已過時） |
+| `jobNo` 是職缺 ID | 詳情 API 只吃**網址短碼**，兩套 ID 不通用 |
+| area code 大致正確 | 20 筆錯 16 筆，且 104 不分新竹縣市／嘉義縣市 |
+
+**發現**
+- `static.104.com.tw/category-tool/json/{Area,JobCat,Indust}.json` 是公開靜態分類表，
+  **沒有 Cloudflare**，可直接抓。原始檔存於 `docs/api-samples/`。
+- 104 無公開職缺 API；台灣就業通（勞動部）有免費開放 API 可作補充來源。
+
+### 2026-08-01（上午）— 專案骨架與 Docker 開發環境
 
 詳見 [docs/devlog/2026-08-01.md](docs/devlog/2026-08-01.md)。
 
