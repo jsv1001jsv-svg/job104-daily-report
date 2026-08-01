@@ -1,0 +1,92 @@
+# =============================================================================
+# 本機開發環境
+#
+# 三個服務，各司其職：
+#   api        FastAPI，接 LINE webhook（follow / message 事件）
+#   scheduler  APScheduler，本機模擬「每天 09:00 跑日報」（正式環境由 Modal Cron 取代）
+#   firestore  Firebase 模擬器，本機測試不碰到雲端真實資料
+#
+# 常用指令：
+#   docker compose up              啟動全部（前景，看得到 log）
+#   docker compose up -d           背景啟動
+#   docker compose logs -f api     追某個服務的 log
+#   docker compose exec api bash   進容器裡下指令
+#   docker compose down            停止並移除容器
+#   docker compose down -v         連同 volume 一起刪（會清掉 Firestore 資料）
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # api：LINE Webhook 端點
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      target: dev              # 用 Dockerfile 的 dev 階段（見 Dockerfile 註解）
+    ports:
+      # "本機port:容器port" —— 瀏覽器打 localhost:8100 會轉進容器的 8000。
+      # 本機 port 用變數是因為 8000 常被其他專案佔走；容器內固定 8000 不受影響。
+      # 要換 port 改 .env 的 API_PORT 即可，不用動這個檔案。
+      - "127.0.0.1:${API_PORT:-8100}:8000"
+    volumes:
+      # bind mount：把本機專案目錄掛進容器。
+      # 這是熱重載的關鍵 —— 你在 VSCode 存檔，容器裡的檔案同步變更，
+      # uvicorn --reload 偵測到就自動重啟，不用重 build image。
+      - .:/app
+      # 匿名 volume：保護容器內的快取目錄不被上面那行的本機目錄蓋掉
+      - /app/.pytest_cache
+    env_file:
+      - .env                   # 機密從 .env 讀，.env 不進版控（見 .gitignore）
+    environment:
+      # 這行讓 Firestore SDK 改連模擬器而非雲端。
+      # "firestore" 是下面那個服務的名字 —— Compose 會自動把服務名解析成容器 IP，
+      # 所以容器之間用服務名互相呼叫就好，不需要知道 IP。
+      FIRESTORE_EMULATOR_HOST: firestore:8080
+      APP_ENV: development
+    depends_on:
+      firestore:
+        condition: service_started
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # scheduler：每日排程（本機模擬 Modal Cron）
+  # ---------------------------------------------------------------------------
+  scheduler:
+    build:
+      context: .
+      target: dev              # 跟 api 用同一份 image，只是啟動指令不同
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    environment:
+      FIRESTORE_EMULATOR_HOST: firestore:8080
+      APP_ENV: development
+    depends_on:
+      firestore:
+        condition: service_started
+    # 覆蓋 Dockerfile 的 CMD：這個容器不跑 web server，跑排程器
+    command: ["python", "-m", "scheduler.run"]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # firestore：Firebase 模擬器
+  # 本機開發不要動到雲端正式資料，也不用等網路
+  # ---------------------------------------------------------------------------
+  firestore:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:512.0.0-emulators
+    ports:
+      # 綁 127.0.0.1 而非 0.0.0.0 —— 只有本機連得到，同網段的人連不進來。
+      # 這個對外 port 只是方便你從本機工具檢視資料，容器之間走內部網路不經過它。
+      - "127.0.0.1:${FIRESTORE_PORT:-8181}:8080"
+    command: >
+      gcloud emulators firestore start
+      --host-port=0.0.0.0:8080
+      --database-mode=firestore-native
+    volumes:
+      # named volume：資料存在 Docker 管理的空間，容器重啟資料還在
+      - firestore-data:/root/.config/gcloud
+
+volumes:
+  firestore-data:

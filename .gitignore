@@ -1,0 +1,28 @@
+# --- 機密：絕不進版控 ---
+.env
+.env.*
+!.env.example
+secrets/
+*-service-account*.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# --- 測試與工具快取 ---
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Firestore emulator 落地資料 ---
+.firestore-data/
+
+# --- 編輯器 / OS ---
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

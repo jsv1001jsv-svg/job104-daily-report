@@ -1,0 +1,21 @@
+# 版本鎖定：避免不同時間 build 出不同環境（可重現建置）
+
+# --- Web / Webhook ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# --- HTTP client（抓 104 JSON API、呼叫 OpenRouter / LINE）---
+httpx==0.28.1
+
+# --- 設定驗證：啟動時檢查必要環境變數，快速失敗 ---
+pydantic==2.10.4
+pydantic-settings==2.7.0
+
+# --- 資料庫 ---
+google-cloud-firestore==2.20.0
+
+# --- LINE Messaging API ---
+line-bot-sdk==3.14.2
+
+# --- 本機排程模擬（正式環境由 Modal Cron 取代）---
+apscheduler==3.11.0

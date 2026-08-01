@@ -1,0 +1,10 @@
+-r requirements.txt
+
+# --- 測試 ---
+pytest==8.3.4
+pytest-asyncio==0.25.2
+pytest-cov==6.0.0
+respx==0.22.0          # mock httpx 請求，測試不打真的 104 / LINE API
+
+# --- 品質 ---
+ruff==0.9.1

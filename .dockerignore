@@ -1,0 +1,26 @@
+# 這些檔案不需要進 image，排除可加快 build 並避免機密外洩
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+secrets/
+*-service-account*.json
+
+__pycache__
+*.py[cod]
+.venv
+venv
+
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+
+.firestore-data
+docs/
+README.md
+docker-compose*.yml
+Dockerfile
+.vscode
+.idea
