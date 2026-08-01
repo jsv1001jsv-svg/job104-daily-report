@@ -1,8 +1,8 @@
 # CLAUDE.md — 104 每日職缺日報自動化（多使用者版）
 
 > 本檔記錄專案上下文，供後續開發（含 Claude Code）參考。
-> 狀態：**需求已確認，進入申請 / 建置階段**。
-> 最後更新：2026-07-28
+> 狀態：**專案骨架與 Docker 開發環境已建立，待驗證 104 API**。
+> 最後更新：2026-08-01
 
 ---
 
@@ -58,7 +58,8 @@
 
 | 環節 | 選型 | 備註 |
 |------|------|------|
-| 排程 | **Modal** `modal.Cron`，時區 Asia/Taipei | 每天 09:00 |
+| 本機開發 | **Docker Compose**（api / scheduler / firestore 三服務） | 見第 11 節 |
+| 排程 | **Modal** `modal.Cron`，時區 Asia/Taipei | 每天 09:00；本機由 APScheduler 模擬 |
 | Webhook | **Modal Web Endpoint**（FastAPI） | 接 LINE follow / message 事件，登記使用者與條件 |
 | 抓取 | **HTTP 請求（httpx）為主**，Playwright 備援 | 104 有 JSON API |
 | 資料庫 | **Firebase（Firestore）** | 使用者表 + 各使用者已看過職缺 ID |
@@ -114,24 +115,109 @@ users/{userId}
 
 ## 9. 待確認 / 待決定
 
-1. **OpenRouter 省錢模型**：實作前挑一個當下便宜且中文摘要品質可接受的型號。
-2. **使用者設定條件的 UX**：預設用「傳訊息給官方帳號（例：台北 後端工程師）」來設定，之後可加指令（如「/set」「/stop」）。
-3. **地區對應表**：需建立「城市名稱 → 104 area code」對照（先支援六都 + 常見縣市）。
+1. **104 API 實際格式**（🔴 最高優先，卡住 scraper / summarizer / pipeline 的測試）：
+   endpoint、參數名、回應欄位路徑目前皆為推測，須開 DevTools Network 實測後修正。
+2. **地區對應表代碼值**：`src/scraper/area_map.py` 的 area code 尚未驗證，
+   須逐一勾選 104 各縣市、比對網址 `area=` 參數。查找**邏輯**已完成並有測試。
+3. **OpenRouter 省錢模型**：實作前挑一個當下便宜且中文摘要品質可接受的型號。
+   目前預設 `google/gemini-2.0-flash-001`。
+4. **使用者設定條件的 UX**：目前用「傳訊息給官方帳號（例：台北 後端工程師）」，
+   之後可加指令（如「/set」「/stop」）。
 
 ---
 
-## 10. 建議目錄結構（尚未建立）
+## 10. 目錄結構（已建立）
+
+核心邏輯與執行平台脫鉤，`modal_app.py`（雲端）與 `scheduler/run.py`（本機）
+都只是薄入口，共用同一份 `src/`。日後換平台只需換入口檔。
 
 ```
-job-daily-report/
-├── CLAUDE.md
-├── modal_app.py        # Modal 進入點：cron + web endpoint(webhook)
-├── webhook.py          # 處理 LINE follow/message 事件，登記使用者
-├── scraper.py          # 104 抓取（JSON API / 備援）
-├── area_map.py         # 城市 → 104 area code 對照
-├── summarizer.py       # OpenRouter 摘要
-├── notifier.py         # LINE push message
-├── store.py            # Firebase(Firestore) 存取 + 去重
-├── config.py           # 時間、數量上限等設定
-└── requirements.txt
+C:\Project\
+├── CLAUDE.md               # 本檔：需求、決策、開發紀錄
+├── README.md               # 怎麼跑起來
+├── docker-compose.yml      # 本機三服務
+├── Dockerfile              # 多階段：builder / dev / production
+├── .env.example            # 環境變數範本（.env 不進版控）
+├── requirements.txt        # 執行依賴（版本鎖定）
+├── requirements-dev.txt    # 測試與品質工具
+├── pyproject.toml          # pytest / coverage / ruff 設定
+│
+├── modal_app.py            # ← 雲端入口：Modal Cron + Web Endpoint
+├── scheduler/run.py        # ← 本機入口：APScheduler 模擬 cron
+│
+├── src/                    # 平台無關的核心
+│   ├── config.py           #   環境變數載入與驗證
+│   ├── models.py           #   Job / UserConfig / DailyReport（全 frozen）
+│   ├── pipeline.py         #   主流程：抓取→去重→摘要→推播→入庫
+│   ├── scraper/
+│   │   ├── client.py       #   104 JSON API
+│   │   └── area_map.py     #   城市 → area code
+│   ├── summarizer/openrouter.py
+│   ├── store/firestore.py  #   Repository 模式，Firestore 細節封在這
+│   ├── notifier/line.py    #   LINE push + 訊息排版
+│   └── webhook/
+│       ├── app.py          #   FastAPI + 簽章驗證
+│       └── handlers.py     #   follow / message 事件處理
+│
+├── tests/unit/             # 31 個測試
+└── docs/devlog/            # 每日詳細開發紀錄
 ```
+
+> 與原規劃（9 個 .py 平鋪）的差異：改為依領域分套件，符合
+> `~/.claude/rules/coding-style.md` 的「依功能組織、高內聚低耦合」。
+
+---
+
+## 11. 本機開發環境（Docker Compose）
+
+**部署架構決策**：本機用 Compose 開發，正式環境部署到 Modal。
+理由與被否決的方案見 `docs/devlog/2026-08-01.md`。
+
+| 服務 | 用途 | 本機位址 |
+| :--- | :--- | :--- |
+| `api` | FastAPI，接 LINE webhook | http://localhost:8100 |
+| `scheduler` | APScheduler，每日 09:00 觸發 | 無對外 port |
+| `firestore` | Firebase 模擬器 | localhost:8181 |
+
+```bash
+cp .env.example .env          # 填金鑰
+docker compose up -d
+curl http://localhost:8100/health
+docker compose exec api pytest
+```
+
+⚠️ Host port 預設 8100 / 8181，避開被其他專案佔用的 8000 / 8080。
+改 port 只需改 `.env` 的 `API_PORT` / `FIRESTORE_PORT`。
+
+完整指令見 [README.md](README.md)。
+
+---
+
+## 12. 開發紀錄
+
+> 精簡條目。詳細除錯過程見 `docs/devlog/YYYY-MM-DD.md`。
+
+### 2026-08-01 — 專案骨架與 Docker 開發環境
+
+詳見 [docs/devlog/2026-08-01.md](docs/devlog/2026-08-01.md)。
+
+**完成**
+- 決定部署架構：Compose 開發 + Modal 部署（三方案比較後選定）
+- Docker 三服務環境跑通：`api` / `scheduler` / `firestore` 皆 Up，`/health` 回 200
+- 專案骨架：`src/` 依領域分套件，核心邏輯與平台脫鉤
+- 31 個單元測試通過，ruff 全過
+
+**踩到的坑**
+| 問題 | 原因 | 解法 |
+| :--- | :--- | :--- |
+| 測試檔 SyntaxError | 中文函式名混入空白 `test_缺少簽章 header 被拒絕` | 改底線分隔 |
+| ruff 報 27 個 N802 | 中文沒有大小寫，規則不適用 | `tests/**` 加 per-file-ignores |
+| Compose 起不來，port 8080 被佔 | 另一專案 `stock-information-platform` 佔 8000；wslrelay 佔 8080 | host port 改用 `${API_PORT:-8100}` 變數 |
+
+**未達標項目（誠實記錄）**
+- 測試覆蓋率 **44%**，未達 80% 門檻。`fail_under = 80` 保留未調降。
+  未覆蓋的是 scraper / summarizer / store / pipeline —— 這些依賴外部 API 的
+  真實回應格式，驗證前寫測試等於測自己的猜測。
+- `src/scraper/client.py` 與 `area_map.py` 的代碼值標為 ⚠️ 待驗證，尚不可用。
+
+**下一步**：驗證 104 API 實際格式 → 補 scraper 測試 → 申請各服務帳號
