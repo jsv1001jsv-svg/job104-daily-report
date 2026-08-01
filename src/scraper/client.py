@@ -87,18 +87,7 @@ async def search_jobs(
     owns_client = client is None
     client = client or httpx.AsyncClient(headers=_HEADERS, timeout=20.0)
 
-    params = {
-        "area": area_code,
-        "order": "11",          # 依更新日期排序，新職缺優先
-        "asc": "0",
-        "page": "1",
-        "pagesize": str(min(limit, _MAX_PAGE_SIZE)),
-        "jobsource": "m_joblist_search",
-    }
-    if jobcat:
-        params["jobcat"] = jobcat
-    else:
-        params["keyword"] = keyword
+    params = build_search_params(keyword, area_code, limit, jobcat)
 
     try:
         response = await client.get(_SEARCH_URL, params=params)
@@ -112,12 +101,71 @@ async def search_jobs(
         if owns_client:
             await client.aclose()
 
-    raw_jobs = _extract_job_list(payload)
-    jobs = [_search_item_to_job(raw) for raw in raw_jobs[:limit]]
+    jobs = parse_search_payload(payload, limit)
 
     logger.info("搜尋完成 keyword=%s area=%s 取得 %d 筆", keyword, area_code, len(jobs))
     await asyncio.sleep(settings.scrape_delay_seconds)
     return jobs
+
+
+def build_search_params(
+    keyword: str,
+    area_code: str,
+    limit: int,
+    jobcat: str | None = None,
+) -> dict[str, str]:
+    """組搜尋參數。
+
+    抽成獨立函式是為了讓 httpx 與瀏覽器兩種傳輸方式共用同一份定義 ——
+    104 的搜尋「頁面」與搜尋「API」吃的參數同名，瀏覽器層把這組參數
+    掛在頁面網址上，頁面就會用同樣條件去打 API。
+    """
+    params = {
+        "area": area_code,
+        "order": "11",          # 依更新日期排序，新職缺優先
+        "asc": "0",
+        "page": "1",
+        "pagesize": str(min(limit, _MAX_PAGE_SIZE)),
+        "jobsource": "m_joblist_search",
+    }
+    if jobcat:
+        params["jobcat"] = jobcat
+    else:
+        params["keyword"] = keyword
+    return params
+
+
+def parse_search_payload(payload: dict, limit: int) -> list[Job]:
+    """把搜尋 API 的原始回應轉成 Job 清單。
+
+    與傳輸方式無關 —— httpx 或瀏覽器拿到的 JSON 都走這裡，
+    確保兩條路徑的解析結果一致。
+    """
+    raw_jobs = _extract_job_list(payload)
+    return [_search_item_to_job(raw) for raw in raw_jobs[:limit]]
+
+
+def parse_detail_payload(job_id: str, payload: dict) -> Job:
+    """把詳情 API 的原始回應轉成 Job。
+
+    Raises:
+        ScraperError: 回應缺少 data 物件。
+    """
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise ScraperError(f"詳情回應缺少 data 物件（job_id={job_id}）：{list(payload)}")
+
+    return _detail_to_job(job_id, data)
+
+
+def job_page_url(job_id: str) -> str:
+    """職缺頁網址。詳情 API 需要用它當 Referer。"""
+    return _JOB_PAGE_URL.format(job_id=job_id)
+
+
+def job_detail_url(job_id: str) -> str:
+    """職缺詳情 API 網址。"""
+    return _JOB_DETAIL_URL.format(job_id=job_id)
 
 
 def _extract_job_list(payload: dict) -> list[dict]:
@@ -218,12 +266,11 @@ async def fetch_job_detail(
     Raises:
         ScraperError: 網路錯誤、非 JSON、或缺少 data 物件。
     """
-    url = _JOB_DETAIL_URL.format(job_id=job_id)
     # 詳情 API 的 Referer 需指向該職缺頁本身，指向搜尋頁會被擋
-    headers = {"Referer": _JOB_PAGE_URL.format(job_id=job_id)}
+    headers = {"Referer": job_page_url(job_id)}
 
     try:
-        response = await client.get(url, headers=headers)
+        response = await client.get(job_detail_url(job_id), headers=headers)
         response.raise_for_status()
         payload = response.json()
     except httpx.HTTPError as exc:
@@ -231,11 +278,7 @@ async def fetch_job_detail(
     except ValueError as exc:
         raise ScraperError(f"104 詳情回應不是合法 JSON（job_id={job_id}）：{exc}") from exc
 
-    data = payload.get("data")
-    if not isinstance(data, dict):
-        raise ScraperError(f"詳情回應缺少 data 物件（job_id={job_id}）：{list(payload)}")
-
-    return _detail_to_job(job_id, data)
+    return parse_detail_payload(job_id, payload)
 
 
 def _detail_to_job(job_id: str, data: dict) -> Job:

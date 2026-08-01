@@ -27,6 +27,23 @@ RUN pip install --no-cache-dir uv==0.5.14
 COPY requirements.txt requirements-dev.txt ./
 RUN uv pip install --system --no-cache -r requirements-dev.txt
 
+# Playwright 需要瀏覽器本體，pip 只裝了控制它的 Python 套件。
+# 預設會裝到 ~/.cache，指定固定路徑才能在 production 階段 COPY 過去。
+# 這層約 1GB，是為了繞過 Cloudflare 付出的代價（見 CLAUDE.md 5.1）。
+#
+# 為什麼不用 `playwright install --with-deps`？
+# 它寫死了 Ubuntu 的字型套件名（ttf-unifont、ttf-ubuntu-font-family），
+# 在 Debian 上不存在會直接失敗。這裡改成明列 Chromium 實際需要的函式庫。
+# 註：Debian 13 (trixie) 起部分套件改名帶 t64 後綴（64-bit time_t 轉換）。
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+COPY scripts/chromium-deps.txt ./
+RUN apt-get update \
+    && grep -vE '^\s*(#|$)' chromium-deps.txt \
+       | xargs apt-get install -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/* \
+    && playwright install chromium
+
 
 # -----------------------------------------------------------------------------
 # dev：本機開發階段（docker-compose.yml 用這個）
@@ -62,6 +79,17 @@ RUN useradd -r -u 1001 appuser
 # 只搬「裝好的套件」過來，builder 裡的編譯工具留在原地不進最終 image
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
+
+# 瀏覽器本體從 builder 直接搬過來，避免重複下載 1GB；
+# 系統相依則需在本階段重裝一次（前一階段的 apt 安裝不會跟著 COPY 過來）。
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+COPY --from=builder /ms-playwright /ms-playwright
+
+COPY scripts/chromium-deps.txt ./
+RUN apt-get update \
+    && grep -vE '^\s*(#|$)' chromium-deps.txt \
+       | xargs apt-get install -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/* chromium-deps.txt
 
 COPY --chown=appuser:appuser src/ ./src/
 COPY --chown=appuser:appuser modal_app.py ./

@@ -4,8 +4,11 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 
-# --- HTTP client（抓 104 JSON API、呼叫 OpenRouter / LINE）---
+# --- HTTP client（呼叫 OpenRouter / LINE、抓 104 靜態分類表）---
 httpx==0.28.1
+
+# --- 瀏覽器自動化：104 受 Cloudflare 保護，純 HTTP 抓不到（見 CLAUDE.md 5.1）---
+playwright==1.49.1
 
 # --- 設定驗證：啟動時檢查必要環境變數，快速失敗 ---
 pydantic==2.10.4

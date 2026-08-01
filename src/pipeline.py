@@ -16,7 +16,9 @@ from datetime import UTC, datetime
 from src.config import get_settings
 from src.models import DailyReport, UserConfig
 from src.notifier.line import NotifierError, push_report
-from src.scraper.client import ScraperError, search_jobs
+from src.scraper.browser import BrowserSession
+from src.scraper.client import ScraperError
+from src.scraper.fetcher import fetch_jobs
 from src.store.firestore import JobStore
 from src.summarizer.openrouter import summarize
 
@@ -36,10 +38,16 @@ async def run_daily_report(store: JobStore | None = None) -> dict[str, int]:
     users = await store.list_users()
     logger.info("開始每日日報，共 %d 位使用者", len(users))
 
-    results = await asyncio.gather(
-        *(_process_user(user, store) for user in users),
-        return_exceptions=True,
-    )
+    if not users:
+        return {"total": 0, "succeeded": 0, "failed": 0}
+
+    # 整批共用一個瀏覽器 session：Cloudflare 通行證綁在 session 上，
+    # 每位使用者各開一次瀏覽器會慢好幾倍（見 CLAUDE.md 第 5.1 節）
+    async with BrowserSession() as session:
+        results = await asyncio.gather(
+            *(_process_user(user, store, session) for user in users),
+            return_exceptions=True,
+        )
 
     failed = sum(1 for r in results if isinstance(r, BaseException))
     stats = {"total": len(users), "succeeded": len(users) - failed, "failed": failed}
@@ -47,7 +55,11 @@ async def run_daily_report(store: JobStore | None = None) -> dict[str, int]:
     return stats
 
 
-async def _process_user(user: UserConfig, store: JobStore) -> None:
+async def _process_user(
+    user: UserConfig,
+    store: JobStore,
+    session: BrowserSession,
+) -> None:
     """處理單一使用者。例外往上拋，由 gather 收集，不中斷其他人。
 
     Raises:
@@ -57,7 +69,8 @@ async def _process_user(user: UserConfig, store: JobStore) -> None:
     settings = get_settings()
 
     try:
-        jobs = await search_jobs(
+        jobs = await fetch_jobs(
+            session,
             keyword=user.keyword,
             area_code=user.area_code,
             limit=settings.max_jobs_per_day * 3,  # 多抓一些，去重後才夠數
