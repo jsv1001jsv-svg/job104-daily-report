@@ -1,8 +1,8 @@
 """地區解析測試。
 
-注意：這裡只測「查找邏輯」，不斷言 area code 的實際數值 ——
-那些代碼尚未對 104 驗證（見 area_map.py 開頭說明），
-現在把值寫死進測試，之後修正代碼時測試會假性失敗。
+代碼值已於 2026-08-01 對 104 官方 Area.json 驗證，因此除了查找邏輯外，
+也針對幾個代表性代碼與 104 的合併縣市規則做斷言 —— 這些是 104 改版時
+最該被擋下來的迴歸。
 """
 
 import pytest
@@ -28,6 +28,36 @@ class TestResolveAreaCode:
     def test_空字串回傳_None(self) -> None:
         assert resolve_area_code("") is None
         assert resolve_area_code("   ") is None
+
+    @pytest.mark.parametrize(
+        ("city", "expected"),
+        [
+            ("台北市", "6001001000"),
+            ("新北市", "6001002000"),
+            ("桃園市", "6001005000"),
+            ("台中市", "6001008000"),
+            ("高雄市", "6001016000"),
+            ("連江縣", "6001023000"),
+        ],
+    )
+    def test_代碼值與_104_官方對照表一致(self, city: str, expected: str) -> None:
+        assert resolve_area_code(city) == expected
+
+    @pytest.mark.parametrize(
+        "aliases",
+        [
+            ("新竹", "新竹市", "新竹縣", "竹科"),
+            ("嘉義", "嘉義市", "嘉義縣"),
+        ],
+    )
+    def test_104_不分縣市者共用同一碼(self, aliases: tuple[str, ...]) -> None:
+        codes = {resolve_area_code(alias) for alias in aliases}
+        assert len(codes) == 1
+        assert None not in codes
+
+    @pytest.mark.parametrize("island", ["澎湖", "金門", "馬祖", "連江"])
+    def test_離島也要能解析(self, island: str) -> None:
+        assert resolve_area_code(island) is not None
 
 
 class TestParseQuery:
