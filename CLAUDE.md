@@ -338,12 +338,16 @@ docker compose exec api pytest
 - `client.py` 收斂成純解析函式，不再發任何請求
 - 測試 169 → 171，覆蓋率 89% → **99%**
 
-**代價全消失**
+**代價全消失**（Docker 重 build 實測）
 | 項目 | Playwright | curl_cffi |
-| :--- | :--- | :--- |
-| image 大小 | +1GB | +幾 MB |
+| :--- | ---: | ---: |
+| api image | 2.13 GB | **471 MB** |
 | 每次執行 | +10~30 秒 | 一般 HTTP |
 | 實際可用 | ❌ 從未成功 | ✅ 已驗證 |
+
+**已驗證 Linux 容器內同樣可用**（`production` 階段以非 root 實跑抓到職缺），
+Modal 部署的前提成立 —— 先前的驗證都在 Windows host，而 TLS 指紋依賴
+底層函式庫，跨 OS 必須實測而非推論。
 
 ### 2026-08-02（上午）— 繞開抓取，補完其他環節的測試
 
