@@ -19,6 +19,9 @@
     python scripts/probe_104_api.py --keyword "AI 工程師" --area 6001002000
     python scripts/probe_104_api.py --out-dir docs/api-samples
 
+用 curl_cffi 發請求：104 的 Cloudflare 是靠 TLS 指紋辨識機器人，
+純 httpx 會被回 403（見 CLAUDE.md 5.1）。
+
 當好公民：每個請求之間 sleep，總請求數個位數，跟人工開瀏覽器搜尋無異。
 """
 
@@ -32,19 +35,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import httpx
+from curl_cffi.requests import AsyncSession
+from curl_cffi.requests.exceptions import RequestException
 
 # --- 待驗證的候選 endpoint ---------------------------------------------------
 # 依可信度排序：第一個是第三方實作佐證過的，第二個是 client.py 目前寫的。
 # 哪個先回 200 + JSON 就是答案。
 SEARCH_ENDPOINTS: tuple[str, ...] = (
-    "https://www.104.com.tw/jobs/search/list",
     "https://www.104.com.tw/jobs/search/api/jobs",
+    "https://www.104.com.tw/jobs/search/list",
 )
 
-DETAIL_ENDPOINT = "https://www.104.com.tw/job/ajax/content/{job_id}"
+# 詳情只吃網址短碼（8wfs1），不是搜尋結果裡的 jobNo 流水號
+DETAIL_ENDPOINT = "https://www.104.com.tw/api/jobs/{job_id}"
 
-# 104 的 JSON endpoint 會擋掉沒有瀏覽器特徵的請求（實測直接 fetch 會 403）
+# 通過 Cloudflare 的關鍵是 TLS 指紋（見 IMPERSONATE），header 只是輔助
 BASE_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -55,7 +60,10 @@ BASE_HEADERS = {
 }
 
 DEFAULT_KEYWORD = "後端工程師"
-DEFAULT_AREA = "6001001000"  # 臺北市（待驗證）
+DEFAULT_AREA = "6001001000"  # 臺北市
+
+# 讓 curl_cffi 重現 Chrome 的 TLS handshake；拿掉就會被 Cloudflare 擋下
+IMPERSONATE = "chrome"
 REQUEST_DELAY_SECONDS = 2.0
 
 
@@ -74,7 +82,7 @@ def build_search_params(keyword: str, area: str) -> dict[str, str]:
 
 
 async def probe_search(
-    client: httpx.AsyncClient,
+    client: AsyncSession,
     keyword: str,
     area: str,
 ) -> tuple[str, dict[str, Any]] | None:
@@ -92,7 +100,7 @@ async def probe_search(
 
         try:
             response = await client.get(url, params=params)
-        except httpx.HTTPError as exc:
+        except RequestException as exc:
             print(f"  ✗ 連線失敗：{exc}")
             await asyncio.sleep(REQUEST_DELAY_SECONDS)
             continue
@@ -109,7 +117,7 @@ async def probe_search(
         try:
             payload = response.json()
         except ValueError:
-            print("  ✗ 不是 JSON（可能是 HTML 頁面 → 該走 Playwright 或換 endpoint）")
+            print("  ✗ 不是 JSON（多半是 Cloudflare 挑戰頁 → 檢查 IMPERSONATE 設定）")
             print(f"    回應前 300 字：\n{response.text[:300]}")
             await asyncio.sleep(REQUEST_DELAY_SECONDS)
             continue
@@ -120,7 +128,7 @@ async def probe_search(
     return None
 
 
-async def probe_detail(client: httpx.AsyncClient, job_id: str) -> dict[str, Any] | None:
+async def probe_detail(client: AsyncSession, job_id: str) -> dict[str, Any] | None:
     """打職缺詳情 endpoint。工作內容／條件／福利只有這裡才有。"""
     url = DETAIL_ENDPOINT.format(job_id=job_id)
     # 詳情 endpoint 的 Referer 需指向該職缺頁本身，指向搜尋頁會被擋
@@ -131,7 +139,7 @@ async def probe_detail(client: httpx.AsyncClient, job_id: str) -> dict[str, Any]
 
     try:
         response = await client.get(url, headers=headers)
-    except httpx.HTTPError as exc:
+    except RequestException as exc:
         print(f"  ✗ 連線失敗：{exc}")
         return None
 
@@ -207,8 +215,8 @@ async def run(keyword: str, area: str, out_dir: Path) -> int:
     """執行完整探測流程。回傳 process exit code。"""
     print(f"104 API 探測｜keyword={keyword!r} area={area}")
 
-    async with httpx.AsyncClient(
-        headers=BASE_HEADERS, timeout=20.0, follow_redirects=True
+    async with AsyncSession(
+        headers=BASE_HEADERS, timeout=20, impersonate=IMPERSONATE
     ) as client:
         result = await probe_search(client, keyword, area)
 
@@ -262,11 +270,15 @@ async def run(keyword: str, area: str, out_dir: Path) -> int:
 
 
 def _guess_job_id(job: dict[str, Any]) -> str | None:
-    """從第一筆職缺中認出 job id。欄位名待驗證，故試多個候選。"""
-    for key in ("jobNo", "jobId", "job_id", "id"):
-        value = job.get(key)
-        if value:
-            return str(value)
+    """取出詳情 API 要用的網址短碼。
+
+    ⚠️ 不能用 `jobNo`（14950369 那種流水號）—— 詳情 API 只吃藏在
+    link.job 網址裡的短碼（8wfs1）。兩套 ID 不通用。
+    """
+    link = job.get("link")
+    job_url = link.get("job", "") if isinstance(link, dict) else ""
+    if job_url:
+        return job_url.rstrip("/").rsplit("/", 1)[-1]
     return None
 
 

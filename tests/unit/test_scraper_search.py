@@ -12,6 +12,7 @@ from src.scraper.client import (
     _extract_job_list,
     _extract_job_slug,
     _format_salary,
+    _normalize_url,
     _search_item_to_job,
 )
 
@@ -114,3 +115,13 @@ class TestFormatSalary:
 
     def test_欄位缺失視為面議(self) -> None:
         assert _format_salary({}) == "待遇面議"
+
+
+class TestNormalizeUrl:
+    def test_補上_https_scheme(self) -> None:
+        """104 回的是 protocol-relative 連結，直接丟給使用者點不開。"""
+        assert _normalize_url("//www.104.com.tw/job/aaa11") == "https://www.104.com.tw/job/aaa11"
+
+    def test_已完整的網址原樣保留(self) -> None:
+        url = "https://www.104.com.tw/job/aaa11"
+        assert _normalize_url(url) == url

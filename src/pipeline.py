@@ -16,9 +16,9 @@ from datetime import UTC, datetime
 from src.config import get_settings
 from src.models import DailyReport, UserConfig
 from src.notifier.line import NotifierError, push_report
-from src.scraper.browser import BrowserSession
 from src.scraper.client import ScraperError
 from src.scraper.fetcher import fetch_jobs
+from src.scraper.transport import HttpSession
 from src.store.firestore import JobStore
 from src.summarizer.openrouter import summarize
 
@@ -41,9 +41,8 @@ async def run_daily_report(store: JobStore | None = None) -> dict[str, int]:
     if not users:
         return {"total": 0, "succeeded": 0, "failed": 0}
 
-    # 整批共用一個瀏覽器 session：Cloudflare 通行證綁在 session 上，
-    # 每位使用者各開一次瀏覽器會慢好幾倍（見 CLAUDE.md 第 5.1 節）
-    async with BrowserSession() as session:
+    # 整批共用一個 HTTP session，讓連線得以重用（見 CLAUDE.md 第 5.1 節）
+    async with HttpSession() as session:
         results = await asyncio.gather(
             *(_process_user(user, store, session) for user in users),
             return_exceptions=True,
@@ -58,7 +57,7 @@ async def run_daily_report(store: JobStore | None = None) -> dict[str, int]:
 async def _process_user(
     user: UserConfig,
     store: JobStore,
-    session: BrowserSession,
+    session: HttpSession,
 ) -> None:
     """處理單一使用者。例外往上拋，由 gather 收集，不中斷其他人。
 

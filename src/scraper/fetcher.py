@@ -1,10 +1,10 @@
-"""104 抓取的對外入口：組合瀏覽器傳輸與欄位解析。
+"""104 抓取的對外入口：組合 HTTP 傳輸與欄位解析。
 
 三層分工，改動時只需動到對應那層：
 
-    browser.py   傳輸  —— 開瀏覽器、通過 Cloudflare、把 JSON 拿到手
-    client.py    解析  —— 把 104 的 JSON 轉成 Job（與傳輸方式無關）
-    fetcher.py   流程  —— 搜尋 → 逐筆補詳情，並處理部分失敗
+    transport.py  傳輸  —— 通過 Cloudflare、把 JSON 拿到手
+    client.py     解析  —— 把 104 的 JSON 轉成 Job（與傳輸方式無關）
+    fetcher.py    流程  —— 搜尋 → 逐筆補詳情，並處理部分失敗
 
 pipeline 只需要認識這一層。
 """
@@ -14,7 +14,6 @@ import logging
 
 from src.config import get_settings
 from src.models import Job
-from src.scraper.browser import BrowserError, BrowserSession
 from src.scraper.client import (
     ScraperError,
     build_search_params,
@@ -23,12 +22,13 @@ from src.scraper.client import (
     parse_detail_payload,
     parse_search_payload,
 )
+from src.scraper.transport import HttpSession, TransportError
 
 logger = logging.getLogger(__name__)
 
 
 async def fetch_jobs(
-    session: BrowserSession,
+    session: HttpSession,
     keyword: str,
     area_code: str,
     limit: int,
@@ -36,11 +36,10 @@ async def fetch_jobs(
 ) -> list[Job]:
     """搜尋職缺並補齊每筆的條件與福利。
 
-    session 由呼叫端提供並跨使用者共用 —— Cloudflare 通行證綁在 session 上，
-    每人各開一次瀏覽器會慢好幾倍（見 browser.BrowserSession）。
+    session 由呼叫端提供並跨使用者共用，讓連線得以重用。
 
     Args:
-        session: 已啟動的瀏覽器 session。
+        session: 已啟動的 HTTP session。
         keyword: 職務關鍵字。
         area_code: 104 area 參數，見 area_map。
         limit: 最多取幾筆。
@@ -62,7 +61,7 @@ async def fetch_jobs(
 
 
 async def _search(
-    session: BrowserSession,
+    session: HttpSession,
     keyword: str,
     area_code: str,
     limit: int,
@@ -73,7 +72,7 @@ async def _search(
 
     try:
         payload = await session.fetch_search(params)
-    except BrowserError as exc:
+    except TransportError as exc:
         raise ScraperError(f"104 搜尋失敗（keyword={keyword} area={area_code}）：{exc}") from exc
 
     jobs = parse_search_payload(payload, limit)
@@ -81,7 +80,7 @@ async def _search(
     return jobs
 
 
-async def _attach_details(session: BrowserSession, jobs: list[Job]) -> list[Job]:
+async def _attach_details(session: HttpSession, jobs: list[Job]) -> list[Job]:
     """逐筆補上「條件」與「福利」—— 搜尋列表沒有這兩欄，但日報需要。
 
     刻意用序列而非平行：一次噴 20 個請求對 104 不友善，也容易觸發風控。
@@ -97,7 +96,7 @@ async def _attach_details(session: BrowserSession, jobs: list[Job]) -> list[Job]
 
         try:
             detailed.append(await _fetch_detail(session, job.job_id))
-        except (BrowserError, ScraperError):
+        except (TransportError, ScraperError):
             logger.warning("補詳情失敗，保留搜尋結果 job_id=%s", job.job_id, exc_info=True)
             detailed.append(job)
             failed += 1
@@ -107,7 +106,7 @@ async def _attach_details(session: BrowserSession, jobs: list[Job]) -> list[Job]
     return detailed
 
 
-async def _fetch_detail(session: BrowserSession, job_id: str) -> Job:
+async def _fetch_detail(session: HttpSession, job_id: str) -> Job:
     """抓單筆詳情。Referer 須指向該職缺頁本身，指向搜尋頁會被 104 擋。"""
     payload = await session.fetch_json(
         job_detail_url(job_id),

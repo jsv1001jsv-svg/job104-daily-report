@@ -1,20 +1,21 @@
 """抓取流程測試。
 
-用假的 session 取代真實瀏覽器 —— 這裡要驗的是「流程如何處理成功與失敗」，
-不是 Playwright 本身。真實連線的驗證屬於整合測試，見 scripts/probe_104_api.py。
+用假的 session 取代真實 HTTP —— 這裡要驗的是「流程如何處理成功與失敗」，
+不是傳輸層本身（那在 test_transport.py）。真實連線的驗證屬於整合測試，
+見 scripts/probe_104_api.py。
 """
 
 from typing import Any
 
 import pytest
 
-from src.scraper.browser import BrowserError
 from src.scraper.client import ScraperError
 from src.scraper.fetcher import fetch_jobs
+from src.scraper.transport import TransportError
 
 
 class FakeSession:
-    """可控制回應與失敗的假 BrowserSession。"""
+    """可控制回應與失敗的假 HttpSession。"""
 
     def __init__(
         self,
@@ -39,7 +40,7 @@ class FakeSession:
         job_id = url.rsplit("/", 1)[-1]
         payload = self._detail_payloads.get(job_id)
         if payload is None:
-            raise BrowserError(f"假的失敗：{job_id}")
+            raise TransportError(f"假的失敗：{job_id}")
         return payload
 
 
@@ -123,7 +124,7 @@ class TestFetchJobs:
 
     async def test_搜尋失敗要往上拋(self) -> None:
         """沒有搜尋結果就沒有日報可做，與單筆詳情失敗不同。"""
-        session = FakeSession(search_error=BrowserError("Cloudflare 擋下"))
+        session = FakeSession(search_error=TransportError("Cloudflare 擋下"))
 
         with pytest.raises(ScraperError, match="搜尋失敗"):
             await fetch_jobs(session, keyword="k", area_code="a", limit=5)

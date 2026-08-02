@@ -1,6 +1,6 @@
 """每日日報主流程測試。
 
-外部相依（瀏覽器、104、OpenRouter、LINE）全部換成假的 ——
+外部相依（104、OpenRouter、LINE、Firestore）全部換成假的 ——
 這裡要驗的是**編排**：誰先誰後、哪一步失敗會怎樣。
 
 最關鍵的兩條規則，各自有專門的測試：
@@ -38,16 +38,16 @@ class FakeStore:
         self.marked[user_id] = jobs
 
 
-class FakeBrowserSession:
-    """記錄是否被啟動的假瀏覽器。"""
+class FakeHttpSession:
+    """記錄是否被啟動的假 HTTP session。"""
 
     started = 0
 
     def __init__(self) -> None:
         pass
 
-    async def __aenter__(self) -> "FakeBrowserSession":
-        FakeBrowserSession.started += 1
+    async def __aenter__(self) -> "FakeHttpSession":
+        FakeHttpSession.started += 1
         return self
 
     async def __aexit__(self, *_: Any) -> None:
@@ -55,9 +55,9 @@ class FakeBrowserSession:
 
 
 @pytest.fixture(autouse=True)
-def _fake_browser(monkeypatch: pytest.MonkeyPatch) -> None:
-    FakeBrowserSession.started = 0
-    monkeypatch.setattr("src.pipeline.BrowserSession", FakeBrowserSession)
+def _fake_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    FakeHttpSession.started = 0
+    monkeypatch.setattr("src.pipeline.HttpSession", FakeHttpSession)
 
 
 @pytest.fixture
@@ -101,11 +101,11 @@ class TestNoUsers:
 
         assert stats == {"total": 0, "succeeded": 0, "failed": 0}
 
-    async def test_沒有使用者時不啟動瀏覽器(self) -> None:
-        """啟動 Chromium 要 10~30 秒，沒人訂閱就別付這個代價。"""
+    async def test_沒有使用者時不建立連線(self) -> None:
+        """沒人訂閱就不必建立連線。"""
         await run_daily_report(store=FakeStore([]))
 
-        assert FakeBrowserSession.started == 0
+        assert FakeHttpSession.started == 0
 
 
 class TestHappyPath:
@@ -128,13 +128,13 @@ class TestHappyPath:
 
         assert [job.job_id for job in store.marked["U1"]] == ["j1", "j2"]
 
-    async def test_整批共用一個瀏覽器_session(self) -> None:
-        """每位使用者各開一次瀏覽器會慢好幾倍（見 CLAUDE.md 5.1）。"""
+    async def test_整批共用一個_session(self) -> None:
+        """每位使用者各開一條連線是浪費，且更像異常流量。"""
         store = FakeStore([_user("U1"), _user("U2"), _user("U3")])
 
         await run_daily_report(store=store)
 
-        assert FakeBrowserSession.started == 1
+        assert FakeHttpSession.started == 1
 
     async def test_已看過的職缺不再推送(self, pushed: list[Any]) -> None:
         store = FakeStore([_user("U1")], seen={"j1"})

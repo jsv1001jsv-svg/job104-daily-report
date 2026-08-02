@@ -1,7 +1,11 @@
-"""104 職缺抓取。
+"""104 職缺 API 的參數組裝與回應解析。
 
-驗證狀態（2026-08-01，兩支 API 皆已對真實回應驗證）
---------------------------------------------------
+**純函式，不發任何請求。** 送出請求是 transport.py 的事，
+這樣「104 的資料長什麼樣」與「怎麼把資料弄到手」可以各自獨立演進 ——
+2026-08-02 傳輸層從 Playwright 換成 curl_cffi 時，本模組一行都不用改。
+
+驗證狀態（2026-08-01 對真實回應驗證，2026-08-02 再次確認）
+----------------------------------------------------------
 搜尋：`GET /jobs/search/api/jobs?area=&jobcat=&page=&pagesize=`
       回應的 `data` **直接是陣列**（不是 data.list），分頁在 metadata.pagination。
 
@@ -10,32 +14,14 @@
 
 ⚠️ 兩套 ID 別搞混：搜尋結果的 `jobNo`（14950369）是數字流水號，
    詳情 API 只吃**網址短碼**（8wfs1，藏在 link.job 裡）。本模組統一用短碼。
-
-🔴 **Cloudflare 阻擋（架構層級限制）**
-   `www.104.com.tw` 全站受 Cloudflare bot 防護，純 httpx 帶再完整的 header
-   也會拿到 403「Just a moment...」。實測：有瀏覽器 cf_clearance cookie 才會通。
-   → 正式實作必須經由瀏覽器 session（Playwright），本模組的 httpx 版本
-     只在「呼叫端注入已通過驗證的 client」時可用。
-
-   注意 `static.104.com.tw` 的分類表（Area/JobCat）**不受**此限制，可直接抓。
-
-當好公民的原則（寫在程式裡而非只寫在文件裡）：
-  - 帶可辨識的 User-Agent 與 Referer
-  - 每次請求之間有間隔（settings.scrape_delay_seconds）
-  - 一天只跑一次，且有筆數上限
 """
 
-import asyncio
 import logging
 
-import httpx
-
-from src.config import get_settings
 from src.models import Job
 
 logger = logging.getLogger(__name__)
 
-_SEARCH_URL = "https://www.104.com.tw/jobs/search/api/jobs"
 _JOB_DETAIL_URL = "https://www.104.com.tw/api/jobs/{job_id}"
 _JOB_PAGE_URL = "https://www.104.com.tw/job/{job_id}"
 
@@ -45,67 +31,9 @@ _MAX_PAGE_SIZE = 20
 # 104 用這個值表示薪資「以上」，不是真的上限
 _SALARY_UNBOUNDED = 9_999_999
 
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-    ),
-    # 104 的 JSON endpoint 會擋掉沒有 Referer 的請求
-    "Referer": "https://www.104.com.tw/jobs/search/",
-}
-
 
 class ScraperError(RuntimeError):
     """抓取失敗。呼叫端應記錄並跳過該使用者，不要讓整批日報中斷。"""
-
-
-async def search_jobs(
-    keyword: str,
-    area_code: str,
-    limit: int,
-    client: httpx.AsyncClient | None = None,
-    jobcat: str | None = None,
-) -> list[Job]:
-    """依關鍵字與地區搜尋職缺。
-
-    Args:
-        keyword: 職務關鍵字，例：「後端工程師」。
-        area_code: 104 area 參數，見 area_map。
-        limit: 最多回傳幾筆（上限 pagesize，超過需分頁）。
-        client: 可注入的 httpx client；Cloudflare 要求瀏覽器 session，見模組開頭。
-        jobcat: 104 職務分類代碼，例：「2007001016」（後端工程師）。
-            有給就用分類搜尋，比關鍵字精準——關鍵字會誤中標題含該字串的無關職缺。
-
-    Returns:
-        Job 清單，條件／福利為空字串（搜尋列表沒有，需 fetch_job_detail 補齊），
-        摘要欄位為 None。
-
-    Raises:
-        ScraperError: 網路錯誤或回應格式非預期。
-    """
-    settings = get_settings()
-    owns_client = client is None
-    client = client or httpx.AsyncClient(headers=_HEADERS, timeout=20.0)
-
-    params = build_search_params(keyword, area_code, limit, jobcat)
-
-    try:
-        response = await client.get(_SEARCH_URL, params=params)
-        response.raise_for_status()
-        payload = response.json()
-    except httpx.HTTPError as exc:
-        raise ScraperError(f"104 搜尋請求失敗（keyword={keyword}）：{exc}") from exc
-    except ValueError as exc:
-        raise ScraperError(f"104 回應不是合法 JSON（keyword={keyword}）：{exc}") from exc
-    finally:
-        if owns_client:
-            await client.aclose()
-
-    jobs = parse_search_payload(payload, limit)
-
-    logger.info("搜尋完成 keyword=%s area=%s 取得 %d 筆", keyword, area_code, len(jobs))
-    await asyncio.sleep(settings.scrape_delay_seconds)
-    return jobs
 
 
 def build_search_params(
@@ -246,39 +174,6 @@ def _normalize_url(link: str) -> str:
     if link.startswith("//"):
         return f"https:{link}"
     return link
-
-
-async def fetch_job_detail(
-    job_id: str,
-    client: httpx.AsyncClient,
-) -> Job:
-    """抓單筆職缺詳情，組成完整的 Job。
-
-    搜尋列表拿不到「條件」與「福利」，這兩欄是日報必要欄位，只有這支 API 有。
-
-    Args:
-        job_id: 104 職缺短碼，例：「8wfs1」（取自職缺網址 /job/{job_id}）。
-        client: 必須注入 —— Cloudflare 要求瀏覽器 session，見模組開頭說明。
-
-    Returns:
-        欄位齊全的 Job（摘要欄位仍為 None）。
-
-    Raises:
-        ScraperError: 網路錯誤、非 JSON、或缺少 data 物件。
-    """
-    # 詳情 API 的 Referer 需指向該職缺頁本身，指向搜尋頁會被擋
-    headers = {"Referer": job_page_url(job_id)}
-
-    try:
-        response = await client.get(job_detail_url(job_id), headers=headers)
-        response.raise_for_status()
-        payload = response.json()
-    except httpx.HTTPError as exc:
-        raise ScraperError(f"104 職缺詳情請求失敗（job_id={job_id}）：{exc}") from exc
-    except ValueError as exc:
-        raise ScraperError(f"104 詳情回應不是合法 JSON（job_id={job_id}）：{exc}") from exc
-
-    return parse_detail_payload(job_id, payload)
 
 
 def _detail_to_job(job_id: str, data: dict) -> Job:

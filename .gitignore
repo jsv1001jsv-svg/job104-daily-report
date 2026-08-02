@@ -26,3 +26,7 @@ htmlcov/
 .idea/
 Thumbs.db
 desktop.ini
+
+# 探測工具的原始回應輸出（檔名帶時間戳）只供當下比對，會隨 104 內容變動，
+# 不進版控。docs/api-samples/ 下的官方分類表（Area/JobCat/Indust）則要保留。
+docs/api-samples/[0-9]*.json

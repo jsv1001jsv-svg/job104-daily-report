@@ -7,8 +7,9 @@ uvicorn[standard]==0.34.0
 # --- HTTP client（呼叫 OpenRouter / LINE、抓 104 靜態分類表）---
 httpx==0.28.1
 
-# --- 瀏覽器自動化：104 受 Cloudflare 保護，純 HTTP 抓不到（見 CLAUDE.md 5.1）---
-playwright==1.49.1
+# --- 抓 104：Cloudflare 是靠 TLS 指紋辨識機器人，curl_cffi 模仿瀏覽器的
+#     TLS/HTTP2 handshake 即可通過，不需要真的開瀏覽器（見 CLAUDE.md 5.1）---
+curl_cffi==0.16.0
 
 # --- 設定驗證：啟動時檢查必要環境變數，快速失敗 ---
 pydantic==2.10.4

@@ -1,8 +1,8 @@
 # CLAUDE.md — 104 每日職缺日報自動化（多使用者版）
 
 > 本檔記錄專案上下文，供後續開發（含 Claude Code）參考。
-> 狀態：**除 104 抓取外，各環節皆已實作並測試（覆蓋率 89%）；
-> 抓取被 Cloudflare 擋住，是唯一擋住上線的項目**。
+> 狀態：**核心流程全部打通並測試（覆蓋率 99%）。
+> 104 抓取已可用，剩下的是申請各服務帳號與雲端部署**。
 > 最後更新：2026-08-02
 
 ---
@@ -38,7 +38,7 @@
   Modal Cron（09:00 Asia/Taipei）
         │  讀取所有使用者 + 各自搜尋條件
         ▼
-  [抓取] 104 搜尋 JSON API（HTTP 帶 UA/Referer 為主；Playwright 備援）
+  [抓取] 104 搜尋 JSON API（curl_cffi，模仿瀏覽器 TLS 指紋通過 Cloudflare）
         │
         ▼
   [去重] 與 Firebase 該使用者「已看過職缺 ID」比對 → 取新職缺
@@ -62,7 +62,7 @@
 | 本機開發 | **Docker Compose**（api / scheduler / firestore 三服務） | 見第 11 節 |
 | 排程 | **Modal** `modal.Cron`，時區 Asia/Taipei | 每天 09:00；本機由 APScheduler 模擬 |
 | Webhook | **Modal Web Endpoint**（FastAPI） | 接 LINE follow / message 事件，登記使用者與條件 |
-| 抓取 | **Playwright 為主**（httpx 已證實不可行） | 104 全站有 Cloudflare 防護，見第 5 節 |
+| 抓取 | **curl_cffi**（模仿瀏覽器 TLS 指紋） | Cloudflare 擋的是 TLS 指紋不是 header，見 5.1 |
 | 資料庫 | **Firebase（Firestore）** | 使用者表 + 各使用者已看過職缺 ID |
 | 摘要 | **OpenRouter**（省錢模型，型號待定） | 濃縮職缺描述 |
 | 推送 | **LINE Messaging API** push message | LINE Notify 已停用（見註記） |
@@ -73,121 +73,127 @@
 
 - ⚠️ **LINE Notify 已於 2025/3/31 停用**，改用 **Messaging API + 官方帳號**。
 - **免費額度成本**：LINE 官方帳號免費方案每月推播則數有限（約 200~500 則/月，依方案）。1 使用者 × 1 則/天 × 30 天 ≈ 30 則/人月 → 免費方案約可服務個位數~十幾位使用者，之後需升級方案或分流。
-- **104 抓取**：JSON API 已驗證可用（endpoint / 參數 / 欄位見 `src/scraper/client.py`），
-  但 🔴 **`www.104.com.tw` 全站受 Cloudflare bot 防護**——2026-08-01 實測，純 httpx
-  帶再完整的 header 也是 403「Just a moment...」，有瀏覽器 `cf_clearance` cookie 才會通。
-  因此抓取必須經瀏覽器 session（Playwright），代價是 image +1GB、每次多花 10~30 秒。
-  例外：`static.104.com.tw` 的分類表（Area / JobCat）**不受**限制，可直接抓。
+- **104 抓取**：✅ 已可用。JSON API 的 endpoint / 參數 / 欄位見 `src/scraper/client.py`。
+  `www.104.com.tw` 有 Cloudflare bot 防護，但它是在 **TLS handshake** 層辨識機器人
+  （JA3/JA4 指紋），不是看 header —— 所以 httpx 補再多 header 都是 403，而
+  `curl_cffi` 模仿 Chrome 的 handshake 就直接通過，**不需要瀏覽器**。見 5.1。
+  例外：`static.104.com.tw` 的分類表（Area / JobCat）本來就沒有防護。
 - **104 官方無公開職缺 API**：`developers.104.com.tw` 只提供 B2B（履歷傳輸、職缺刊登），
   需企業客戶身分，且沒有任何一支能讓第三方讀取公開職缺。爬蟲無法用官方管道取代。
 - 低頻（一天一次）、有筆數上限、帶可辨識 UA，當好公民。
 - **一個官方帳號只能設一個 Webhook URL**：多使用者共用同一個 Webhook 端點處理所有事件。
 - **金鑰不寫進程式碼**：全部放 **Modal Secrets**。
 
-### 5.1 抓取策略：為什麼需要 Playwright
+### 5.1 抓取策略：Cloudflare 擋的是 TLS 指紋
 
 > 這一節解釋「我們在做什麼、為什麼這樣做」，寫給日後回來看的人（含未來的自己）。
-> 決策日期：2026-08-01。
+> 決策日期：2026-08-02（推翻 2026-08-01 的 Playwright 方案）。
 
 #### 遇到的問題
 
-104 的職缺資料是靠 JSON API 傳給網頁的，我們也已經把那兩支 API 的網址、參數、
-回應欄位全部驗證清楚（見 `src/scraper/client.py`）。照理說用 Python 直接發個
-HTTP 請求就能拿到資料。
+104 的職缺資料是靠 JSON API 傳給網頁的，那兩支 API 的網址、參數、回應欄位
+都已驗證清楚（見 `src/scraper/client.py`）。照理說用 Python 直接發個 HTTP
+請求就能拿到資料。
 
 但實測失敗：`www.104.com.tw` 前面擋著一層 **Cloudflare 的機器人防護**。
-它會判斷「這個請求是真人用瀏覽器發的，還是程式發的」，判定是程式就回 403，
-內容是一頁寫著「Just a moment...」的驗證頁，拿不到任何職缺資料。
+它判定請求來自程式就回 403，內容是一頁「Just a moment...」的驗證頁。
 
-我們試過帶上完整的瀏覽器 header（User-Agent、Referer 等）偽裝，**沒有用**。
-實測證實：唯有帶著瀏覽器通過驗證後拿到的 `cf_clearance` cookie 才放行。
+#### 關鍵發現：問題不在 header，在 TLS
 
-#### Playwright 是什麼
+一開始的假設是「請求看起來不像瀏覽器」，所以往 header 上補：User-Agent、
+Referer、Accept-Language⋯⋯ **全部無效**。後來改用 Playwright 開真的
+Chromium，文件頁能過挑戰，但**頁面自己發出的 API 請求照樣 403**。
 
-**Playwright 是一套「用程式操作真實瀏覽器」的工具。**
+那條線索其實已經指出答案了：如果連真瀏覽器發的請求都被擋，問題就不在
+「請求長什麼樣」。**真正的判別依據是 TLS handshake 的指紋（JA3/JA4）。**
 
-它會在背景啟動一個真的 Chromium（Chrome 的開源版本），然後由我們的程式碼
-指揮它：開哪個網址、點哪個按鈕、等頁面載入完成、把結果拿出來。
-整個過程沒有視窗、不需要有人在旁邊操作（這叫 headless／無頭模式）。
+每個 HTTP 客戶端在建立加密連線時，會送出一組自己特有的參數組合 ——
+支援哪些加密套件、以什麼順序排列、帶哪些擴充欄位。這組合像指紋一樣，
+Python 的 TLS 函式庫和 Chrome 差很多，Cloudflare 比對一下就知道對面不是瀏覽器。
+**這一切發生在任何 header 被送出之前**，所以 header 補得再完整都沒有意義。
 
-關鍵在於：**對 Cloudflare 來說，這就是一個真的瀏覽器**，因為它本來就是。
-所以驗證會自然通過，不需要破解或偽裝任何東西。
+#### 解法：curl_cffi
 
-#### 我們具體要做的事：攔截 XHR
+`curl_cffi` 是 curl-impersonate 的 Python 綁定，它會**照著 Chrome 的方式做
+TLS handshake**——用相同的加密套件順序、相同的擴充欄位、相同的 HTTP/2 設定。
+對 Cloudflare 來說指紋就是 Chrome 的，於是直接放行。
 
-用 Playwright 有兩種做法，我們選第二種：
+用法上和 requests / httpx 幾乎一樣，關鍵只有一個參數：
 
-| 做法 | 怎麼運作 | 評估 |
+```python
+AsyncSession(impersonate="chrome")   # 就這樣，其餘照常
+```
+
+⚠️ `impersonate` 是**整個傳輸層唯一不能拿掉的設定**。拿掉就退回 Python 原生
+指紋、全數 403。`src/scraper/transport.py` 裡標了註解，並有一個迴歸測試
+（`test_一定要帶上瀏覽器指紋`）盯著它。
+
+實測結果（2026-08-02）：
+
+| 客戶端 | 搜尋 API | 詳情 API |
 | :--- | :--- | :--- |
-| 解析 DOM | 讓瀏覽器載入頁面，再從 HTML 裡把文字一段段挖出來 | ❌ 104 是 SPA，HTML 的 class 名稱是編譯後的亂碼，改版就壞 |
-| **攔截 XHR** | 讓瀏覽器正常載入搜尋頁，**在旁邊把它自己發出的那支 API 回應攔下來** | ✅ 採用 |
+| httpx（Python 原生指紋） | ❌ 403 挑戰頁 | ❌ 403 |
+| Playwright 真瀏覽器 | ❌ 403 | ❌ 403 |
+| **curl_cffi（Chrome 指紋）** | ✅ 31 筆／頁，共 59 頁 1767 筆 | ✅ 條件與福利齊全 |
 
-> ⚠️ **2026-08-01 實測後修正**：攔截 XHR **行不通** —— 頁面自己發出的 API 請求
-> 同樣被回 403，SPA 不會重試，所以攔不到任何成功的回應。
-> 實作改為「導頁取得 Cloudflare 通行證 → 在已通過驗證的頁面內自行 fetch」。
-> 但**目前這個做法也還沒成功**，詳見下方「目前卡住的地方」。
-> 下方的比較仍然成立（DOM 解析依舊是更差的選項），保留供日後參考。
+連續 5 次搜尋 5/5 成功，翻頁正常且無重複。
 
-選攔截 XHR 的理由：
+#### 為什麼這比 Playwright 好得多
 
-1. **拿到的是乾淨的 JSON**，不是要靠猜的 HTML 結構
-2. **`client.py` 已經寫好的解析邏輯可以直接沿用**，不必為了 Playwright 重寫一套
-3. **對 104 改版比較耐撞**：API 欄位改動的頻率遠低於前端 class 名稱
+Playwright 方案曾經被接受過（見下方「歷史」），換成 curl_cffi 後三項代價全消失：
 
-換句話說：**瀏覽器只負責「通過驗證」這件事，資料解析仍然走原本驗證好的那條路。**
+| 項目 | Playwright | curl_cffi |
+| :--- | :--- | :--- |
+| Docker image | +1GB（Chromium 及其相依函式庫） | +幾 MB |
+| 每次執行 | 多花 10~30 秒啟動瀏覽器與等頁面 | 與一般 HTTP 請求相同 |
+| Modal 費用 | 記憶體與執行時間高一個量級 | 一般水準 |
+| 可靠度 | 挑戰頁行為會變，且**實際上根本沒成功** | 已端到端驗證 |
 
-#### 接受的代價
+#### 架構分層
 
-| 代價 | 影響 |
-| :--- | :--- |
-| Docker image 變大約 1GB | 要裝 Chromium 及其相依函式庫 |
-| 每次執行慢 10~30 秒 | 要啟動瀏覽器、等頁面載入 |
-| Modal 費用較高 | 記憶體與執行時間都比純 HTTP 高一個量級 |
+傳輸與解析刻意分開，這次換掉整個傳輸層時 `client.py` 一行都不用改：
 
-**判斷**：可以接受。這個服務**一天只跑一次**，慢 30 秒無感；若是高頻服務就不划算了。
+```
+transport.py  傳輸  —— 通過 Cloudflare、把 JSON 拿到手（curl_cffi）
+client.py     解析  —— 把 104 的 JSON 轉成 Job（純函式，不發請求）
+fetcher.py    流程  —— 搜尋 → 逐筆補詳情，處理部分失敗
+```
 
 #### 被否決的方案
 
-- **純 httpx**：已實測不可行（403），不是調參數就能解決的問題。
-- **從瀏覽器手動複製 `cf_clearance` cookie 餵給 httpx**：技術上可行，但那個 cookie
-  會過期、且綁定 IP 與瀏覽器指紋，等於每隔一段時間要人工介入一次。
-  自動化服務不該有需要人手動續命的環節。
+- **純 httpx**：實測 403，且原因是架構性的（TLS 層），不是調參數能解決。
+- **Playwright**：已實作又移除。除了代價高，**實測根本沒通過**——
+  文件頁能過挑戰，API 請求仍 403。
+- **手動複製 `cf_clearance` cookie**：那個 cookie 會過期、綁 IP 與瀏覽器指紋，
+  等於每隔一段時間要人工介入。自動化服務不該有需要人手動續命的環節。
+- **`mobile.104.com.tw`**：2026-08-02 探測，這個子網域確實存在且沒有 Cloudflare，
+  但不論什麼路徑都只回同一份「版本不存在」的公告 JSON —— 它是 App 的版本檢查
+  端點，不是職缺 API。已排除。
 - **改用台灣就業通開放 API**：免費合法且實測可用，但職缺池與 104 差太多
   （政府就業服務站為主），撐不起日報的數量。列為日後的補充來源，不是替代方案。
 
-#### 目前卡住的地方（2026-08-01）
+#### 這件事的教訓
 
-實作完成、單元測試通過，但**實際連線尚未成功**。現象是文件與 API 待遇不同：
+2026-08-01 花了一整天在 Playwright 上，方向是錯的。錯在**沒有先問「被擋的
+原因是什麼」就開始找「更強的工具」**——從 httpx 換到瀏覽器，是把賭注加大，
+而不是把問題查清楚。
 
-```
-文件頁面（HTML）  → ✅ 通過 Cloudflare 挑戰（約 10 秒），標題正確
-搜尋 API（XHR）   → ❌ 一律 403
-```
+真正有用的那條線索（真瀏覽器發的請求也被擋）當天就已經觀察到了，
+但當時被當成「瀏覽器還不夠像真人」，於是繼續往反偵測的方向加碼。
+如果那時停下來問一句「連真瀏覽器都被擋，那被檢查的到底是什麼？」，
+答案（TLS 層）會來得快很多。
 
-頁面**自己**發出的 API 請求同樣是 403，所以不是我們把請求組錯，
-而是整個瀏覽器 session 不被信任。已排除的做法：
+#### 歷史：曾經採用的 Playwright 方案
 
-| 嘗試 | 文件頁 | API |
-| :--- | :--- | :--- |
-| 預設 headless shell | ❌ 卡在挑戰頁 | — |
-| `channel="chromium"` 新版 headless | ❌ 卡在挑戰頁 | — |
-| 加上一般 Chrome 的 UA | ✅ | ❌ 403 |
-| UA 對齊瀏覽器真實版本號 | ✅ | ❌ 403 |
-| xvfb + 有頭模式 | ✅ | ❌ 403 |
-
-**唯一確認有效的一步**：UA 不能含 `HeadlessChrome`（headless 預設會帶），
-否則連文件頁都過不去。這行設定在 `browser.py` 裡標了不要拿掉。
-
-待試方向：持久化瀏覽器設定檔 + 模擬真人操作（捲動、點下一頁，
-讓 SPA 自己去打 API）。若仍失敗，再評估反偵測版 Playwright
-（`patchright` / `rebrowser-playwright`），或回頭談產品層面的取捨。
-
-⚠️ 誠實記錄：這件事**有可能做不到**。Cloudflare 就是專門在防這個的。
+保留這段是為了讓日後看到 git 歷史裡的 `browser.py` 時知道它為什麼存在、
+又為什麼消失。當時的推論鏈是：httpx 被擋 → 需要真瀏覽器通過挑戰 →
+用 Playwright 攔截頁面自己發的 XHR。實作完成、單元測試通過，
+但**實際連線從未成功**，API 一律 403。詳見 `docs/devlog/2026-08-01.md`。
 
 #### 這件事不影響的部分
 
-`static.104.com.tw` 上的分類表（`Area.json` / `JobCat.json`）**沒有 Cloudflare**，
-純 HTTP 就抓得到。所以地區代碼與職務代碼那部分完全不受影響，也不需要動用瀏覽器。
+`static.104.com.tw` 上的分類表（`Area.json` / `JobCat.json`）本來就沒有
+Cloudflare，純 HTTP 就抓得到，地區代碼與職務代碼那部分完全不受影響。
 
 ---
 
@@ -230,9 +236,9 @@ users/{userId}
 
 1. ~~**104 API 實際格式**~~ ✅ 2026-08-01 完成驗證，已寫入 `src/scraper/client.py`。
 2. ~~**地區對應表代碼值**~~ ✅ 2026-08-01 對 104 官方 `Area.json` 驗證，原本 20 筆錯 16 筆。
-3. 🔴 **Cloudflare 繞過方式**：**未解決，這是目前唯一擋住上線的項目**。
-   Playwright 已實作（`src/scraper/browser.py`），文件頁能過挑戰，但搜尋 API 一律 403。
-   已試過的做法、待試方向與被否決的方案，全部見 **第 5.1 節**。
+3. ~~**Cloudflare 繞過方式**~~ ✅ 2026-08-02 解決。Cloudflare 擋的是 TLS 指紋，
+   改用 `curl_cffi` 模仿 Chrome 的 handshake 即可，不需要瀏覽器。
+   Playwright 那層已整個移除。完整脈絡見 **第 5.1 節**。
 4. **keyword vs jobcat 搜尋**：`jobcat`（如後端工程師 = 2007001016）比關鍵字精準，
    關鍵字會誤中標題含該字串的無關職缺。代價是使用者的自然語言輸入要多一層對應到職務代碼。
    `search_jobs()` 兩種都支援，預設用 keyword，尚未決定正式採用哪個。
@@ -269,7 +275,9 @@ C:\Project\
 │   ├── models.py           #   Job / UserConfig / DailyReport（全 frozen）
 │   ├── pipeline.py         #   主流程：抓取→去重→摘要→推播→入庫
 │   ├── scraper/
-│   │   ├── client.py       #   104 JSON API
+│   │   ├── transport.py    #   傳輸：curl_cffi 通過 Cloudflare
+│   │   ├── client.py       #   解析：104 JSON → Job（純函式）
+│   │   ├── fetcher.py      #   流程：搜尋 → 逐筆補詳情
 │   │   └── area_map.py     #   城市 → area code
 │   ├── summarizer/openrouter.py
 │   ├── store/firestore.py  #   Repository 模式，Firestore 細節封在這
@@ -278,7 +286,7 @@ C:\Project\
 │       ├── app.py          #   FastAPI + 簽章驗證
 │       └── handlers.py     #   follow / message 事件處理
 │
-├── tests/unit/             # 169 個測試，覆蓋率 89%
+├── tests/unit/             # 171 個測試，覆蓋率 99%
 └── docs/devlog/            # 每日詳細開發紀錄
 ```
 
@@ -316,7 +324,28 @@ docker compose exec api pytest
 
 > 精簡條目。詳細除錯過程見 `docs/devlog/YYYY-MM-DD.md`。
 
-### 2026-08-02 — 繞開抓取，補完其他環節的測試
+### 2026-08-02（下午）— Cloudflare 解決，Playwright 整層移除
+
+詳見 [docs/devlog/2026-08-02.md](docs/devlog/2026-08-02.md)。
+
+**突破**：Cloudflare 擋的是 **TLS handshake 指紋（JA3/JA4）**，不是 header。
+改用 `curl_cffi`（模仿 Chrome 的 handshake）純 HTTP 直接通過，**不需要瀏覽器**。
+完整脈絡與「為什麼昨天方向錯了」見第 5.1 節。
+
+**完成**
+- 新增 `src/scraper/transport.py`（傳輸層），端到端對真實 104 驗證通過
+- 移除 `browser.py`、Playwright 依賴、Dockerfile 的 Chromium 安裝層
+- `client.py` 收斂成純解析函式，不再發任何請求
+- 測試 169 → 171，覆蓋率 89% → **99%**
+
+**代價全消失**
+| 項目 | Playwright | curl_cffi |
+| :--- | :--- | :--- |
+| image 大小 | +1GB | +幾 MB |
+| 每次執行 | +10~30 秒 | 一般 HTTP |
+| 實際可用 | ❌ 從未成功 | ✅ 已驗證 |
+
+### 2026-08-02（上午）— 繞開抓取，補完其他環節的測試
 
 詳見 [docs/devlog/2026-08-02.md](docs/devlog/2026-08-02.md)。
 
