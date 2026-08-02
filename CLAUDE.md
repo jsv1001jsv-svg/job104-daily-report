@@ -1,8 +1,9 @@
 # CLAUDE.md — 104 每日職缺日報自動化（多使用者版）
 
 > 本檔記錄專案上下文，供後續開發（含 Claude Code）參考。
-> 狀態：**專案骨架與 Docker 開發環境已建立，待驗證 104 API**。
-> 最後更新：2026-08-01
+> 狀態：**除 104 抓取外，各環節皆已實作並測試（覆蓋率 89%）；
+> 抓取被 Cloudflare 擋住，是唯一擋住上線的項目**。
+> 最後更新：2026-08-02
 
 ---
 
@@ -229,8 +230,9 @@ users/{userId}
 
 1. ~~**104 API 實際格式**~~ ✅ 2026-08-01 完成驗證，已寫入 `src/scraper/client.py`。
 2. ~~**地區對應表代碼值**~~ ✅ 2026-08-01 對 104 官方 `Area.json` 驗證，原本 20 筆錯 16 筆。
-3. ~~**Cloudflare 繞過方式**~~ ✅ 方案已定：Playwright 攔截 XHR。
-   完整理由與被否決的方案見 **第 5.1 節**。🔴 **尚未實作**，這是目前卡住 scraper 上線的唯一項目。
+3. 🔴 **Cloudflare 繞過方式**：**未解決，這是目前唯一擋住上線的項目**。
+   Playwright 已實作（`src/scraper/browser.py`），文件頁能過挑戰，但搜尋 API 一律 403。
+   已試過的做法、待試方向與被否決的方案，全部見 **第 5.1 節**。
 4. **keyword vs jobcat 搜尋**：`jobcat`（如後端工程師 = 2007001016）比關鍵字精準，
    關鍵字會誤中標題含該字串的無關職缺。代價是使用者的自然語言輸入要多一層對應到職務代碼。
    `search_jobs()` 兩種都支援，預設用 keyword，尚未決定正式採用哪個。
@@ -276,7 +278,7 @@ C:\Project\
 │       ├── app.py          #   FastAPI + 簽章驗證
 │       └── handlers.py     #   follow / message 事件處理
 │
-├── tests/unit/             # 31 個測試
+├── tests/unit/             # 169 個測試，覆蓋率 89%
 └── docs/devlog/            # 每日詳細開發紀錄
 ```
 
@@ -313,6 +315,29 @@ docker compose exec api pytest
 ## 12. 開發紀錄
 
 > 精簡條目。詳細除錯過程見 `docs/devlog/YYYY-MM-DD.md`。
+
+### 2026-08-02 — 繞開抓取，補完其他環節的測試
+
+詳見 [docs/devlog/2026-08-02.md](docs/devlog/2026-08-02.md)。
+
+**決策**：Cloudflare 先擱置。抓取成不成功，pipeline / summarizer / store /
+webhook 的邏輯都不會變，這些模組的驗證不該被一個外部封鎖擋住。
+
+**完成**
+- 測試 79 → 169 通過，覆蓋率 54% → **89%**，首次通過 80% 門檻
+- `pipeline` / `summarizer` 從 0% 補到 100%；除 `browser.py` 外所有模組 ≥98%
+- 釘住幾條「錯了會造成資料遺失」的規則：推播成功才標記已看過、
+  單一使用者失敗不影響其他人、webhook 處理失敗仍回 200
+
+**刻意不做**
+- `browser.py` 維持 35%。它需要真實 Chromium 與 Cloudflare 挑戰才有意義，
+  用假物件測等於測自己寫的假物件；且該模組行為都還沒定案。
+
+**踩到的坑**
+| 問題 | 原因 | 解法 |
+| :--- | :--- | :--- |
+| `job.__dict__` 拋 AttributeError | `dataclass(slots=True)` 沒有實例字典 | 用 `dataclasses.replace()` |
+| 測試讀到本機 `.env`，換台機器就壞 | `Settings` 預設 `env_file=".env"` | 測試用 `Settings(_env_file=None, ...)` |
 
 ### 2026-08-01（下午）— 104 API 驗證完成
 
