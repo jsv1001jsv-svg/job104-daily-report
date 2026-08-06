@@ -30,7 +30,12 @@ secrets = [modal.Secret.from_name("job104-secrets")]
 )
 async def daily_report() -> dict[str, int]:
     """每天 09:00 (Asia/Taipei) 為所有使用者產生並推送日報。"""
+    from src.config import get_settings
     from src.pipeline import run_daily_report
+
+    # 先檢查金鑰再開工。Modal Secrets 設錯時，這裡會立刻以清楚的訊息失敗，
+    # 而不是等抓完 104、燒完 LLM 額度之後才在推播那一步爆掉。
+    get_settings().require_production_secrets()
 
     return await run_daily_report()
 

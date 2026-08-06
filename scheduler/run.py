@@ -41,6 +41,10 @@ async def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    # 缺金鑰就別啟動 —— 這個容器的存在意義是早上 9:00 推播，
+    # 等到那一刻才發現金鑰沒設，等於白白損失一天。寧可現在就起不來。
+    settings.require_production_secrets()
+
     scheduler = AsyncIOScheduler(timezone="Asia/Taipei")
     scheduler.add_job(
         _job,
