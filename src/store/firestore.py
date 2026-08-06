@@ -11,18 +11,79 @@ Repository 模式 —— 所有 Firestore 細節關在這個模組裡，
             └─ title, company, url, first_seen_at
 """
 
+import json
 import logging
 from datetime import UTC, datetime
 
 from google.cloud import firestore
+from google.oauth2 import service_account
 
-from src.config import get_settings
+from src.config import Settings, get_settings
 from src.models import Job, UserConfig
 
 logger = logging.getLogger(__name__)
 
 _USERS = "users"
 _SEEN_JOBS = "seen_jobs"
+
+
+def build_client(settings: Settings) -> firestore.AsyncClient:
+    """依環境挑憑證來源，建立 Firestore client。
+
+    三種環境走三條路：
+
+    1. **本機 Compose** —— `FIRESTORE_EMULATOR_HOST` 有值時連模擬器，
+       SDK 自己會用匿名憑證，不需要任何金鑰（這是「本機只要三把金鑰」的前提）。
+    2. **Modal（雲端）** —— Secrets 只能給環境變數，所以憑證是一段 JSON
+       **字串**，用 `from_service_account_info()` 直接吃，不繞檔案系統。
+    3. **其他** —— 兩者皆無時退回 Google 預設憑證機制（ADC），
+       也就是 `GOOGLE_APPLICATION_CREDENTIALS` 指向的憑證**檔案**。
+
+    Raises:
+        RuntimeError: `FIREBASE_SERVICE_ACCOUNT` 有值但不是合法的 service
+            account JSON。訊息會指名變數，避免只看到 SDK 的難懂例外。
+    """
+    project = settings.firebase_project_id
+
+    if settings.use_emulator:
+        return firestore.AsyncClient(project=project)
+
+    raw = settings.firebase_service_account.strip()
+    if not raw:
+        return firestore.AsyncClient(project=project)
+
+    return firestore.AsyncClient(project=project, credentials=_credentials_from_json(raw, project))
+
+
+def _credentials_from_json(raw: str, expected_project: str) -> service_account.Credentials:
+    """把 service account JSON 字串轉成憑證物件。
+
+    兩種常見的貼錯（少複製一段、貼成 Firebase 網頁設定檔）都在這裡攔下來，
+    換成講得清楚的訊息 —— 這條路徑只有部署時會走到，錯誤訊息難懂會很難查。
+    """
+    try:
+        info = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"FIREBASE_SERVICE_ACCOUNT 不是合法 JSON（{exc.msg}）。"
+            "請貼上 Firebase 主控台下載的 service account 金鑰檔完整內容。"
+        ) from exc
+
+    try:
+        credentials = service_account.Credentials.from_service_account_info(info)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"FIREBASE_SERVICE_ACCOUNT 不是 service account 金鑰（{exc}）。"
+            "注意它與 Firebase 網頁版設定（apiKey / authDomain）不是同一份東西。"
+        ) from exc
+
+    actual_project = info.get("project_id")
+    if actual_project and actual_project != expected_project:
+        logger.warning(
+            "憑證的專案是 %s，但 FIREBASE_PROJECT_ID 設為 %s —— 會寫進非預期的資料庫",
+            actual_project, expected_project,
+        )
+    return credentials
 
 
 class JobStore:
@@ -34,7 +95,7 @@ class JobStore:
 
     def __init__(self, client: firestore.AsyncClient | None = None) -> None:
         settings = get_settings()
-        self._client = client or firestore.AsyncClient(project=settings.firebase_project_id)
+        self._client = client or build_client(settings)
         if settings.use_emulator:
             logger.info("使用 Firestore 模擬器：%s", settings.firestore_emulator_host)
 

@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     # --- Firebase ---
     firebase_project_id: str = "job104-daily-report"
     firestore_emulator_host: str = ""
+    # service account JSON 的**內容**（不是檔案路徑）。
+    # Modal Secrets 只能給環境變數，給不了檔案，所以雲端走這條；
+    # 本機留空即可 —— 模擬器不需要憑證。見 src/store/firestore.py。
+    firebase_service_account: str = ""
 
     # --- 應用 ---
     app_env: Literal["development", "staging", "production"] = "development"
