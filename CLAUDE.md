@@ -324,6 +324,20 @@ docker compose exec api pytest
 
 > 精簡條目。詳細除錯過程見 `docs/devlog/YYYY-MM-DD.md`。
 
+### 2026-08-06 — 現況盤點與金鑰申請路徑釐清（無程式碼變更）
+
+詳見 [docs/devlog/2026-08-06.md](docs/devlog/2026-08-06.md)。
+
+- 實測確認：171 passed、覆蓋率 99.59%，卡點 100% 在外部帳號申請
+- **決策**：單人 side project 不走 PR，分支直接 merge 進 `main`
+- **釐清**：本機階段只需 3 把金鑰（LINE ×2 + OpenRouter）。Firestore 走模擬器不做認證，
+  Firebase service account 是上 Modal 才需要
+- **補完缺口**：`firestore.py` 原本只走 ADC（讀憑證**檔案**），但 Modal Secret 只能給
+  **字串**。新增 `build_client()` 支援三種憑證來源（模擬器 / JSON 字串 / ADC），
+  模擬器優先以免本機誤連正式資料庫。測試 171 → **180**，覆蓋率 **99.80%**
+- **待辦**：`require_production_secrets()` 全專案沒有任何地方呼叫，
+  「缺金鑰就啟動失敗」的保護目前是空的
+
 ### 2026-08-02（下午）— Cloudflare 解決，Playwright 整層移除
 
 詳見 [docs/devlog/2026-08-02.md](docs/devlog/2026-08-02.md)。
