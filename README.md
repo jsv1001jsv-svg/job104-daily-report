@@ -39,7 +39,8 @@ docker-compose.yml      ← 本機開發環境
 ```bash
 # 1. 準備環境變數
 cp .env.example .env
-#    填入 LINE / OpenRouter 金鑰（申請進度見 CLAUDE.md 第 8 節）
+#    本機只需三把金鑰：LINE_CHANNEL_ACCESS_TOKEN / LINE_CHANNEL_SECRET / LLM_API_KEY
+#    申請步驟見 docs/setup/credentials.md（Firestore 走模擬器，不需憑證）
 
 # 2. 啟動
 docker compose up -d

@@ -254,10 +254,15 @@ users/{userId}
 
 ## 8. 申請進度（Setup Checklist）
 
+> **完整申請步驟見 [docs/setup/credentials.md](docs/setup/credentials.md)** ——
+> 每把金鑰去哪拿、放哪、怎麼確認拿對了，含各家主控台的已知陷阱。
+
 - [ ] **LINE**：建立官方帳號 → 啟用 Messaging API → 取得 Channel access token + Channel secret ← **進行中**
 - [ ] **Google AI Studio**：aistudio.google.com → Get API key（免費、免信用卡）← **進行中**
-- [ ] **Firebase**：建立專案 → 開 Firestore → 產生 service account 金鑰
+- [ ] **Firebase**：建立專案 → 開 Firestore → 產生 service account 金鑰（僅部署時需要）
 - [ ] **Modal**：註冊 → 安裝 CLI → 建立 Secrets → 部署 webhook + cron
+
+**本機開發只要三把**（LINE ×2 + `LLM_API_KEY`）。Firestore 走模擬器，不需憑證。
 
 ---
 
