@@ -11,7 +11,7 @@ from src.config import Settings, get_settings
 _ALL_SECRETS = {
     "LINE_CHANNEL_ACCESS_TOKEN": "token",
     "LINE_CHANNEL_SECRET": "secret",
-    "OPENROUTER_API_KEY": "key",
+    "LLM_API_KEY": "key",
 }
 
 
@@ -30,7 +30,7 @@ def _settings(**overrides: str) -> Settings:
     defaults = {
         "line_channel_access_token": "",
         "line_channel_secret": "",
-        "openrouter_api_key": "",
+        "llm_api_key": "",
     }
     return Settings(_env_file=None, **{**defaults, **overrides})
 
@@ -40,7 +40,7 @@ class TestRequireProductionSecrets:
         settings = _settings(
             line_channel_access_token="t",
             line_channel_secret="s",
-            openrouter_api_key="k",
+            llm_api_key="k",
         )
 
         settings.require_production_secrets()  # 不拋例外即通過
@@ -57,7 +57,7 @@ class TestRequireProductionSecrets:
     def test_只缺一個時只報那一個(self) -> None:
         settings = _settings(line_channel_access_token="t", line_channel_secret="s")
 
-        with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY") as exc:
+        with pytest.raises(RuntimeError, match="LLM_API_KEY") as exc:
             settings.require_production_secrets()
 
         assert "LINE_CHANNEL_SECRET" not in str(exc.value)

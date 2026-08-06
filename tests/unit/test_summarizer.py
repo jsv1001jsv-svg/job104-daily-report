@@ -1,21 +1,38 @@
-"""OpenRouter 摘要測試。不打真實 API。
+"""LLM 摘要測試。不打真實 API。
 
 這個模組的核心承諾是「摘要失敗不能讓日報失敗」，
 所以降級路徑的測試比成功路徑更重要 —— 成功路徑只有一種，
 失敗路徑有網路錯誤、非 JSON、欄位缺失等好幾種。
+
+端點取自設定而非寫死，所以這裡先固定一個假位址，
+避免測試結果隨本機 .env 指向哪家供應商而變。
 """
 
 from dataclasses import replace
 
 import httpx
+import pytest
 import respx
 
+from src.config import get_settings
 from src.models import Job
-from src.summarizer.openrouter import _API_URL, summarize
+from src.summarizer.llm import summarize
+
+_API_URL = "https://llm.test/v1/chat/completions"
+
+
+@pytest.fixture(autouse=True)
+def _fixed_endpoint(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("LLM_API_URL", _API_URL)
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "test-model")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 def _completion(content: str) -> httpx.Response:
-    """組出 OpenRouter chat completions 的回應外殼。"""
+    """組出 OpenAI 相容 chat completions 的回應外殼。"""
     return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
 
 
@@ -60,7 +77,8 @@ class TestSummarizeSuccess:
         await summarize(sample_job)
 
         request = route.calls.last.request
-        assert request.headers["Authorization"].startswith("Bearer ")
+        assert request.headers["Authorization"] == "Bearer test-key"
+        assert b"test-model" in request.content
         assert b"messages" in request.content
 
 

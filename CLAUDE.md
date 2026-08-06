@@ -64,7 +64,7 @@
 | Webhook | **Modal Web Endpoint**（FastAPI） | 接 LINE follow / message 事件，登記使用者與條件 |
 | 抓取 | **curl_cffi**（模仿瀏覽器 TLS 指紋） | Cloudflare 擋的是 TLS 指紋不是 header，見 5.1 |
 | 資料庫 | **Firebase（Firestore）** | 使用者表 + 各使用者已看過職缺 ID |
-| 摘要 | **OpenRouter**（省錢模型，型號待定） | 濃縮職缺描述 |
+| 摘要 | **Google AI Studio**（`gemini-2.5-flash`，免費層） | 供應商不綁定，任何 OpenAI 相容端點皆可，見 5.2 |
 | 推送 | **LINE Messaging API** push message | LINE Notify 已停用（見註記） |
 
 ---
@@ -195,6 +195,33 @@ fetcher.py    流程  —— 搜尋 → 逐筆補詳情，處理部分失敗
 `static.104.com.tw` 上的分類表（`Area.json` / `JobCat.json`）本來就沒有
 Cloudflare，純 HTTP 就抓得到，地區代碼與職務代碼那部分完全不受影響。
 
+### 5.2 摘要供應商：不綁定，預設 Google AI Studio
+
+> 決策日期：2026-08-06。原本規劃用 OpenRouter 付費模型。
+
+**理由**：這是個人 side project，不該為了摘要職缺而每月付費。
+查證後有兩條免費路，最後選 Google AI Studio：
+
+| 選項 | 免費額度 | 顧慮 |
+| :--- | :--- | :--- |
+| **Google AI Studio** | 5-15 RPM / 100-1000 RPD，免信用卡 | — |
+| OpenRouter `:free` 模型 | 20 RPM / 50 RPD（未儲值） | 免費池多為中國模型，**中文輸出可能是簡體**；日報要求繁體 |
+| 自架 Ollama | 「免費」 | Modal 上跑推論的運算費用遠高於直接用 API |
+
+**實作上不綁定任何一家**：`summarize()` 打的是標準 OpenAI 相容
+`/chat/completions`，供應商由三個環境變數決定（`LLM_API_URL` /
+`LLM_API_KEY` / `LLM_MODEL`）。要換回 OpenRouter 或改用 Groq，
+改 `.env` 即可，程式碼一行不動。模組因此改名 `openrouter.py` → `llm.py`。
+
+⚠️ **已知的額度隱憂**：目前是「一筆職缺一次 API 呼叫」，
+單一使用者一天最多 20 次（`MAX_JOBS_PER_DAY`）。免費額度撐得住個位數使用者，
+再多就會撞牆。**解法不是換供應商，是批次摘要**（一次請求處理 10 筆，
+請求數降 10 倍）。列為待辦，見第 9 節。
+
+> 「開源版 OpenRouter」是 **LiteLLM**（自架的多供應商路由層），
+> 但它只是路由，本身不提供免費推論，仍需某家的 key。
+> 單人專案多養一個服務不划算，已排除。
+
 ---
 
 ## 6. 環境變數 / Secrets（存於 Modal Secrets）
@@ -202,9 +229,11 @@ Cloudflare，純 HTTP 就抓得到，地區代碼與職務代碼那部分完全�
 ```
 LINE_CHANNEL_ACCESS_TOKEN   # LINE Messaging API（long-lived）
 LINE_CHANNEL_SECRET         # 驗證 webhook 簽章
-OPENROUTER_API_KEY          # OpenRouter
-FIREBASE_SERVICE_ACCOUNT    # Firebase service account JSON（Firestore 存取）
+LLM_API_KEY                 # 摘要用（預設 Google AI Studio；供應商可換，見 5.2）
+FIREBASE_SERVICE_ACCOUNT    # Firebase service account JSON 的「內容」（非路徑）
 ```
+
+`LLM_API_URL` / `LLM_MODEL` 有預設值，只在換供應商時才需要設定。
 
 ---
 
@@ -226,7 +255,7 @@ users/{userId}
 ## 8. 申請進度（Setup Checklist）
 
 - [ ] **LINE**：建立官方帳號 → 啟用 Messaging API → 取得 Channel access token + Channel secret ← **進行中**
-- [ ] **OpenRouter**：註冊 → 取得 API key → 選省錢模型
+- [ ] **Google AI Studio**：aistudio.google.com → Get API key（免費、免信用卡）← **進行中**
 - [ ] **Firebase**：建立專案 → 開 Firestore → 產生 service account 金鑰
 - [ ] **Modal**：註冊 → 安裝 CLI → 建立 Secrets → 部署 webhook + cron
 
@@ -244,9 +273,15 @@ users/{userId}
    `search_jobs()` 兩種都支援，預設用 keyword，尚未決定正式採用哪個。
 5. **台灣就業通 API 是否納入為補充來源**：勞動部開放資料，免費免申請、實測可用，
    但職缺池與 104 差異大（政府就業服務站為主），且資料集標示更新頻率「每 1 年」待查證。
-6. **OpenRouter 省錢模型**：實作前挑一個當下便宜且中文摘要品質可接受的型號。
-   目前預設 `google/gemini-2.0-flash-001`。
-4. **使用者設定條件的 UX**：目前用「傳訊息給官方帳號（例：台北 後端工程師）」，
+6. ~~**摘要模型選型**~~ ✅ 2026-08-06 決定 Google AI Studio 免費層
+   （`gemini-2.5-flash`），且實作上不綁供應商。完整脈絡見 **第 5.2 節**。
+   繁中品質待端到端實測驗證。
+7. **批次摘要**：目前一筆職缺一次 API 呼叫，單一使用者一天最多 20 次。
+   免費額度（100-1000 RPD）撐得住個位數使用者，再多會撞牆。
+   改成一次請求處理 10 筆，請求數降 10 倍，也少 10 倍網路往返。
+8. **`require_production_secrets()` 沒有任何地方呼叫**：`config.py` 宣稱
+   「缺金鑰在啟動時就爆」，但那個保護目前是空的，缺金鑰仍會拖到早上 9:00 才失敗。
+9. **使用者設定條件的 UX**：目前用「傳訊息給官方帳號（例：台北 後端工程師）」，
    之後可加指令（如「/set」「/stop」）。
 
 ---
@@ -279,7 +314,7 @@ C:\Project\
 │   │   ├── client.py       #   解析：104 JSON → Job（純函式）
 │   │   ├── fetcher.py      #   流程：搜尋 → 逐筆補詳情
 │   │   └── area_map.py     #   城市 → area code
-│   ├── summarizer/openrouter.py
+│   ├── summarizer/llm.py   #   摘要：OpenAI 相容端點，供應商可換（見 5.2）
 │   ├── store/firestore.py  #   Repository 模式，Firestore 細節封在這
 │   ├── notifier/line.py    #   LINE push + 訊息排版
 │   └── webhook/
@@ -335,8 +370,11 @@ docker compose exec api pytest
 - **補完缺口**：`firestore.py` 原本只走 ADC（讀憑證**檔案**），但 Modal Secret 只能給
   **字串**。新增 `build_client()` 支援三種憑證來源（模擬器 / JSON 字串 / ADC），
   模擬器優先以免本機誤連正式資料庫。測試 171 → **180**，覆蓋率 **99.80%**
+- **摘要改用免費供應商**：OpenRouter 要付費，改用 Google AI Studio 免費層。
+  順便解除供應商綁定 —— 端點從寫死常數改為 `LLM_API_URL` 等三個環境變數，
+  模組 `openrouter.py` → `llm.py`。換供應商只需改 `.env`。見 **5.2 節**
 - **待辦**：`require_production_secrets()` 全專案沒有任何地方呼叫，
-  「缺金鑰就啟動失敗」的保護目前是空的
+  「缺金鑰就啟動失敗」的保護目前是空的；摘要未批次化，會撞免費額度
 
 ### 2026-08-02（下午）— Cloudflare 解決，Playwright 整層移除
 

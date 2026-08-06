@@ -1,4 +1,9 @@
-"""用 OpenRouter 上的便宜模型把職缺描述濃縮成固定欄位。
+"""用便宜的 LLM 把職缺描述濃縮成固定欄位。
+
+**不綁定特定供應商**：只要是 OpenAI 相容的 `/chat/completions` 端點都能用，
+換供應商只要改 `LLM_API_URL` / `LLM_API_KEY` / `LLM_MODEL` 三個環境變數。
+預設是 Google AI Studio（免費額度不需信用卡，繁體中文品質穩定）；
+OpenRouter、Groq、自架 LiteLLM 也都是同一套介面。
 
 摘要失敗時「不」讓整份日報失敗 —— 退回使用原始文字截斷版，
 使用者收到品質稍差的日報，好過收不到日報。
@@ -14,7 +19,6 @@ from src.models import Job
 
 logger = logging.getLogger(__name__)
 
-_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 _FALLBACK_LENGTH = 120
 
 _PROMPT = """你是職缺摘要助手。請把以下 104 職缺資訊濃縮成三個欄位，回傳 JSON。
@@ -49,10 +53,10 @@ async def summarize(job: Job, client: httpx.AsyncClient | None = None) -> Job:
 
     try:
         response = await client.post(
-            _API_URL,
-            headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
+            settings.llm_api_url,
+            headers={"Authorization": f"Bearer {settings.llm_api_key}"},
             json={
-                "model": settings.openrouter_model,
+                "model": settings.llm_model,
                 "messages": [{
                     "role": "user",
                     "content": _PROMPT.format(

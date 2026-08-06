@@ -20,7 +20,7 @@ from src.scraper.client import ScraperError
 from src.scraper.fetcher import fetch_jobs
 from src.scraper.transport import HttpSession
 from src.store.firestore import JobStore
-from src.summarizer.openrouter import summarize
+from src.summarizer.llm import summarize
 
 logger = logging.getLogger(__name__)
 

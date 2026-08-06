@@ -23,9 +23,13 @@ class Settings(BaseSettings):
     line_channel_access_token: str = ""
     line_channel_secret: str = ""
 
-    # --- OpenRouter ---
-    openrouter_api_key: str = ""
-    openrouter_model: str = "google/gemini-2.0-flash-001"
+    # --- LLM（摘要）---
+    # 刻意用中性命名：任何 OpenAI 相容的 /chat/completions 端點都能直接換上，
+    # 換供應商只需改這三個環境變數，程式碼不動。
+    # 預設是 Google AI Studio —— 免費額度不需信用卡，且繁體中文品質穩定。
+    llm_api_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    llm_api_key: str = ""
+    llm_model: str = "gemini-2.5-flash"
 
     # --- Firebase ---
     firebase_project_id: str = "job104-daily-report"
@@ -55,7 +59,7 @@ class Settings(BaseSettings):
         required = {
             "LINE_CHANNEL_ACCESS_TOKEN": self.line_channel_access_token,
             "LINE_CHANNEL_SECRET": self.line_channel_secret,
-            "OPENROUTER_API_KEY": self.openrouter_api_key,
+            "LLM_API_KEY": self.llm_api_key,
         }
         missing = [name for name, value in required.items() if not value]
         if missing:
