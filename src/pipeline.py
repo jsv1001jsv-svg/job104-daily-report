@@ -20,7 +20,7 @@ from src.scraper.client import ScraperError
 from src.scraper.fetcher import fetch_jobs
 from src.scraper.transport import HttpSession
 from src.store.firestore import JobStore
-from src.summarizer.llm import summarize
+from src.summarizer.llm import summarize_jobs
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +81,9 @@ async def _process_user(
     unseen = await store.filter_unseen(user.user_id, jobs)
     selected = unseen[: settings.max_jobs_per_day]
 
-    # 摘要平行處理；summarize 內部已處理失敗降級，不會拋例外
-    summarized = await asyncio.gather(*(summarize(job) for job in selected))
+    # 批次摘要；內部已處理失敗降級，不會拋例外。
+    # 刻意不併發 —— LLM 免費層以請求數計限，同時發多個請求會被擋。
+    summarized = await summarize_jobs(selected)
 
     report = DailyReport(
         user_id=user.user_id,

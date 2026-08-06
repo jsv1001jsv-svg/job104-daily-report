@@ -72,14 +72,14 @@ def _fake_externals(monkeypatch: pytest.MonkeyPatch, pushed: list[Any], sample_j
     async def fake_fetch(_session: Any, **_kwargs: Any) -> list[Job]:
         return [replace(sample_job, job_id="j1"), replace(sample_job, job_id="j2")]
 
-    async def fake_summarize(job: Job) -> Job:
-        return job.with_summary("摘要內容", "摘要條件", "摘要福利")
+    async def fake_summarize_jobs(jobs: Any) -> list[Job]:
+        return [job.with_summary("摘要內容", "摘要條件", "摘要福利") for job in jobs]
 
     async def fake_push(report: Any) -> None:
         pushed.append(report)
 
     monkeypatch.setattr("src.pipeline.fetch_jobs", fake_fetch)
-    monkeypatch.setattr("src.pipeline.summarize", fake_summarize)
+    monkeypatch.setattr("src.pipeline.summarize_jobs", fake_summarize_jobs)
     monkeypatch.setattr("src.pipeline.push_report", fake_push)
 
 

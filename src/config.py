@@ -29,7 +29,13 @@ class Settings(BaseSettings):
     # 預設是 Google AI Studio —— 免費額度不需信用卡，且繁體中文品質穩定。
     llm_api_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
     llm_api_key: str = ""
-    llm_model: str = "gemini-2.5-flash"
+    # 用 -latest 別名而非釘住版本：2026-08-06 實測，原本釘的 gemini-2.5-flash
+    # 已「不再開放給新使用者」直接回 404。釘死版本會在某天無預警失效，
+    # 而別名最多只是輸出風格微幅改變 —— 對日報來說後者的代價小得多。
+    llm_model: str = "gemini-flash-lite-latest"
+    # 一次請求摘要幾筆職缺。這是額度考量不是效能考量 ——
+    # 免費層以「請求數」計限（5-15 RPM），一筆一請求會直接被擋。
+    llm_batch_size: int = Field(default=10, ge=1, le=50)
 
     # --- Firebase ---
     firebase_project_id: str = "job104-daily-report"
